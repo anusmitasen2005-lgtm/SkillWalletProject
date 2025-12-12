@@ -19,12 +19,6 @@ import shutil
 from twilio.rest import Client # NEW: Import Twilio Client
 from twilio.base.exceptions import TwilioRestException # NEW: Import Twilio Exception
 
-# --- TWILIO CLIENT INITIALIZATION ---
-# Initialize the client globally using settings from config.py
-# This will use the TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN from Render Env Vars.
-TWILIO_CLIENT = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-# ------------------------------------
-
 # --- CRITICAL FIX 1: Guaranteed Table Creation ---
 models.Base.metadata.create_all(bind=engine)
 # --------------------------------------------------------------------------
@@ -173,41 +167,40 @@ def send_otp(request: PhoneRequest, db: GetDB):
     db.commit() # Save hash before calling Twilio
     db.refresh(db_user)
     
-    # --- LIVE TWILIO SENDING LOGIC WITH CRITICAL ERROR LOGGING ---
+    # --- LIVE TWILIO SENDING LOGIC (Client Initialized in function) ---
     try:
+        # CRITICAL: Initialize client here to avoid startup crash
+        local_twilio_client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        
         # CRITICAL: Call the Twilio Verify API to send the OTP
-        TWILIO_CLIENT.verify.v2.services(settings.TWILIO_SERVICE_SID) \
+        local_twilio_client.verify.v2.services(settings.TWILIO_SERVICE_SID) \
             .verifications \
             .create(to=phone_number, channel='sms')
         
     except TwilioRestException as e:
-        # LOG THE REAL ERROR TO RENDER CONSOLE
+        # LOG THE REAL TWILIO ERROR
         print("-" * 50)
         print(f"!!! CRITICAL TWILIO REST EXCEPTION !!!")
         print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
         print("-" * 50)
         
-        # Raise an HTTPException for the frontend to handle the failure cleanly
+        # Raise an HTTPException with a specific detail
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OTP service failed. Check server logs for error code (TwilioRestException)."
+            detail="OTP service failed. Check server logs for Twilio error code."
         )
     except Exception as e:
-        # Catch any other initialization/generic errors (e.g., config error)
+        # Catch any other failure (e.g., failed client initialization due to bad config)
         print("-" * 50)
-        print(f"!!! GENERIC SERVER ERROR DURING TWILIO CALL: {e} !!!")
+        print(f"!!! GENERIC SERVER ERROR (Twilio Client Init/Call Failed): {type(e).__name__}: {e} !!!")
         print("-" * 50)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Server encountered an internal error during OTP process."
+            detail="Server encountered a configuration error during OTP process."
         )
 
-    # NOTE: The OTP code is still printed to logs for debugging (but not for production)
-    print("-" * 50)
-    print(f"DEBUG: Successfully triggered Twilio send for {phone_number}. DB hash saved.")
-    print("-" * 50)
-
     # SUCCESS: Return 200 OK status to the frontend
+    print(f"DEBUG: Successfully triggered Twilio send for {phone_number}.")
     return {"message": "OTP sent successfully.", "status": "pending"}
 
 
