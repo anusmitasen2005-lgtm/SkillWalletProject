@@ -7,15 +7,16 @@ load_dotenv()
 
 class Settings(BaseSettings):
     # 1. Database Settings
-    DATABASE_URL: str = os.getenv("DATABASE_URL")
+    DATABASE_URL: str = Field(os.getenv("DATABASE_URL"))
 
     # 2. Security Settings
-    SECRET_KEY: str = os.getenv("SECRET_KEY")
+    SECRET_KEY: str = Field(os.getenv("SECRET_KEY"))
     ALGORITHM: str = "HS256"
 
-    # 3. OTP/Twilio Settings (Placeholders for now)
-    TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID")
-    TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN")
-    TWILIO_SERVICE_SID: str = os.getenv("TWILIO_SERVICE_SID")
+    # 3. OTP/Twilio Settings (Add Union[str, None] to allow None or string)
+    # CRITICAL FIX: Add default empty strings to prevent startup crash if not set
+    TWILIO_ACCOUNT_SID: str | None = Field(default="")
+    TWILIO_AUTH_TOKEN: str | None = Field(default="")
+    TWILIO_SERVICE_SID: str | None = Field(default="")
 
 settings = Settings()
