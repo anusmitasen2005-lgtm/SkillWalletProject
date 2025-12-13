@@ -153,6 +153,11 @@ class IdentityUpdate(BaseModel):
                                          description="Date of birth in YYYY-MM-DD format.")
     gender: Optional[str] = Field(None, example="Male") 
 
+# --- NEW: Schema for requesting a credential review (Task 911) ---
+class ReviewRequest(BaseModel):
+    # This field is a placeholder for a future reviewer's comment or ID
+    reviewer_comment: Optional[str] = Field(None, example="Ready for AI transcription and grading.")
+
 
 # --------------------------------------------------------------------------
 # 2. TIER 1 PHONE AUTHENTICATION ENDPOINTS (MODIFIED FOR LIVE TWILIO)
@@ -572,6 +577,51 @@ def submit_work_portfolio(
         "message": "Micro-Proof submitted successfully. Skill Wallet Token Minted!",
         "skill_token": new_credential.token_id,
         "skill_name": request.skill_name
+    }
+
+# --------------------------------------------------------------------------
+# 4.1. NEW ENDPOINT: REQUEST SKILL CREDENTIAL REVIEW (TASK 911)
+# --------------------------------------------------------------------------
+@app.post("/api/v1/work/request_review/{credential_id}")
+def request_skill_review(
+    credential_id: int, 
+    request: ReviewRequest, 
+    db: GetDB
+):
+    """
+    Flags an existing SkillCredential for review (AI transcription/grading).
+    
+    NOTE: This endpoint is used after the initial work submission to officially 
+    start the verification pipeline (Phase 4/6).
+    """
+    # 1. Retrieve the credential
+    db_credential = db.query(models.SkillCredential).filter(
+        models.SkillCredential.id == credential_id
+    ).first()
+
+    if not db_credential:
+        raise HTTPException(status_code=404, detail="Skill Credential not found.")
+
+    # 2. Update the status and add the comment
+    # In a real pipeline, this would trigger an asynchronous job.
+    db_credential.is_verified = False # Reset verification status if user re-requests review
+    
+    # Placeholder for tracking review status/comments
+    # NOTE: You may need to add a 'review_status' or 'review_comment' column to models.SkillCredential later
+    # For now, we use the comment to signal processing
+    if request.reviewer_comment:
+        print(f"DEBUG: Review comment added: {request.reviewer_comment}")
+
+    # 3. Commit changes
+    db.commit()
+    db.refresh(db_credential)
+
+    return {
+        "message": "Skill Credential flagged for AI/Community review successfully.",
+        "credential_id": db_credential.id,
+        "skill_name": db_credential.skill_name,
+        "is_verified": db_credential.is_verified,
+        "status_note": "Awaiting AI Transcription and Grading."
     }
 
 # --------------------------------------------------------------------------
