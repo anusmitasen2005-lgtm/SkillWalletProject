@@ -158,6 +158,12 @@ class ReviewRequest(BaseModel):
     # This field is a placeholder for a future reviewer's comment or ID
     reviewer_comment: Optional[str] = Field(None, example="Ready for AI transcription and grading.")
 
+# --- NEW: Schema for submitting a final grade/score (Task 914) ---
+class GradeSubmission(BaseModel):
+    grade_score: int = Field(ge=0, le=100, example=85, 
+                             description="Final score (0-100) assigned by reviewer/AI.")
+    final_notes: Optional[str] = Field(None, example="Excellent quality and clear audio description.")
+
 
 # --------------------------------------------------------------------------
 # 2. TIER 1 PHONE AUTHENTICATION ENDPOINTS (MODIFIED FOR LIVE TWILIO)
@@ -622,6 +628,46 @@ def request_skill_review(
         "skill_name": db_credential.skill_name,
         "is_verified": db_credential.is_verified,
         "status_note": "Awaiting AI Transcription and Grading."
+    }
+
+# --------------------------------------------------------------------------
+# 4.2. NEW ENDPOINT: SUBMIT SKILL CREDENTIAL GRADE (TASK 914)
+# --------------------------------------------------------------------------
+@app.post("/api/v1/work/submit_grade/{credential_id}")
+def submit_skill_grade(
+    credential_id: int, 
+    grade_data: GradeSubmission, 
+    db: GetDB
+):
+    """
+    Submits the final grade/score for a SkillCredential and sets it as verified.
+    This simulates the successful conclusion of the AI/Community review process.
+    """
+    # 1. Retrieve the credential
+    db_credential = db.query(models.SkillCredential).filter(
+        models.SkillCredential.id == credential_id
+    ).first()
+
+    if not db_credential:
+        raise HTTPException(status_code=404, detail="Skill Credential not found.")
+
+    # 2. Apply the final grade and verification status
+    db_credential.grade_score = grade_data.grade_score
+    db_credential.is_verified = True # Credential is now officially verified
+
+    # The final_notes field isn't stored in models.SkillCredential, so we just log it.
+    # In a later iteration, you might store this in a separate ReviewLog table.
+    
+    # 3. Commit changes
+    db.commit()
+    db.refresh(db_credential)
+
+    return {
+        "message": "Credential grade submitted and verification complete.",
+        "credential_id": db_credential.id,
+        "skill_name": db_credential.skill_name,
+        "grade_score": db_credential.grade_score,
+        "is_verified": db_credential.is_verified
     }
 
 # --------------------------------------------------------------------------
