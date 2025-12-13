@@ -172,7 +172,7 @@ def send_otp(request: PhoneRequest, db: GetDB):
         # CRITICAL: Initialize client here to avoid startup crash
         local_twilio_client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
         
-        # CRITICAL: Call the Twilio Verify API to send the OTP
+        # CRITICAL FIX: Use the original TWILIO_SERVICE_SID variable name
         local_twilio_client.verify.v2.services(settings.TWILIO_SERVICE_SID) \
             .verifications \
             .create(to=phone_number, channel='sms')
@@ -365,7 +365,7 @@ def submit_tier2_verification(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    update_fields = {k: v for k, v in data.dict().items() if v is not None}
+    update_fields = {k: v for k, v in data.model_dump().items() if v is not None} # Changed to model_dump for Pydantic v2
 
     for field, value in update_fields.items():
         setattr(db_user, field, value)
@@ -395,7 +395,7 @@ def submit_tier3_verification(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found.")
         
-    update_fields = {k: v for k, v in data.dict().items() if v is not None}
+    update_fields = {k: v for k, v in data.model_dump().items() if v is not None} # Changed to model_dump for Pydantic v2
 
     for field, value in update_fields.items():
         setattr(db_user, field, value)
@@ -544,7 +544,6 @@ def transcribe_audio(user_id: int):
 def read_root():
     """Returns the status of the API."""
     return {"message": "Skill Wallet API is running!", "status": "Ready"}
-# In Backend/main.py (Add this new function at the end)
 
 @app.get("/api/v1/health/twilio_check")
 def twilio_health_check():
@@ -586,5 +585,3 @@ def twilio_health_check():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Twilio configuration failed. Environment variables not loading correctly."
         )
-
-# (End of main.py file)
