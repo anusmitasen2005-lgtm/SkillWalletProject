@@ -544,3 +544,47 @@ def transcribe_audio(user_id: int):
 def read_root():
     """Returns the status of the API."""
     return {"message": "Skill Wallet API is running!", "status": "Ready"}
+# In Backend/main.py (Add this new function at the end)
+
+@app.get("/api/v1/health/twilio_check")
+def twilio_health_check():
+    try:
+        # Initialize client here to test the loading of ACCOUNT_SID/AUTH_TOKEN
+        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+        
+        # Attempt to fetch the Account SID from the API (a lightweight test)
+        account = client.api.v2010.accounts(settings.TWILIO_ACCOUNT_SID).fetch()
+        
+        # Check if the fetched account SID matches the configured one
+        if account.sid == settings.TWILIO_ACCOUNT_SID:
+            return {
+                "status": "Healthy",
+                "message": "Twilio client is initialized and authenticated successfully.",
+                "account_sid": account.sid,
+                "friendly_name": account.friendly_name
+            }
+        else:
+            raise Exception("Twilio connection succeeded but returned unexpected Account SID.")
+
+    except TwilioRestException as e:
+        # Catch specific REST API errors (Bad credentials, etc.)
+        print("-" * 50)
+        print(f"!!! TWILIO CHECK FAILED (REST EXCEPTION) !!!")
+        print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
+        print("-" * 50)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Twilio REST Error: Code {e.code}. Check Render logs."
+        )
+    except Exception as e:
+        # Catch generic errors (e.g., settings.TWILIO_ACCOUNT_SID is None)
+        print("-" * 50)
+        print(f"!!! TWILIO CHECK FAILED (GENERIC ERROR) !!!")
+        print(f"!!! Error: {type(e).__name__}: {e} !!!")
+        print("-" * 50)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Twilio configuration failed. Environment variables not loading correctly."
+        )
+
+# (End of main.py file)
