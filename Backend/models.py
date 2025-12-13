@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date # ADDED Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -20,8 +20,14 @@ class User(Base):
     otp_expiry = Column(DateTime)
     is_verified = Column(Boolean, default=False)
 
+    # --- NEW CORE IDENTITY FIELDS ---
+    email = Column(String, unique=True, index=True, nullable=True) # NEW: Added email
+    date_of_birth = Column(Date, nullable=True)                  # NEW: Added Date of Birth (uses Date type)
+    gender = Column(String, nullable=True)                       # NEW: Added Gender
+    # --------------------------------
+
     # Core Profile Fields (CRITICAL: Added Name and Profession)
-    name = Column(String, nullable=True)       # NEW
+    name = Column(String, nullable=True)     # NEW
     profession = Column(String, nullable=True) # NEW
     profile_photo_file_path = Column(String, nullable=True) # NEW
 

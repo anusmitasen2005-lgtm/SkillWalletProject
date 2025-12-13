@@ -146,6 +146,13 @@ class CoreProfileUpdate(BaseModel):
     name: str
     profession: str
 
+# --- NEW: Schema for updating core identity fields (Task 897) ---
+class IdentityUpdate(BaseModel):
+    email: Optional[str] = Field(None, example="user@example.com") 
+    date_of_birth: Optional[str] = Field(None, example="1990-01-01", 
+                                         description="Date of birth in YYYY-MM-DD format.")
+    gender: Optional[str] = Field(None, example="Male") 
+
 
 # --------------------------------------------------------------------------
 # 2. TIER 1 PHONE AUTHENTICATION ENDPOINTS (MODIFIED FOR LIVE TWILIO)
@@ -236,9 +243,19 @@ def get_user_profile(user_id: int, db: GetDB):
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found.")
 
+    # Convert date_of_birth to YYYY-MM-DD string format for API output
+    dob_str = db_user.date_of_birth.strftime("%Y-%m-%d") if db_user.date_of_birth else None
+
     profile_data = {
         "user_id": db_user.id,
         "phone_number": db_user.phone_number,
+        
+        # --- NEW IDENTITY FIELDS ---
+        "email": db_user.email,
+        "date_of_birth": dob_str,
+        "gender": db_user.gender,
+        # ---------------------------
+
         # CRITICAL FIX: Include Name and Profession
         "name": db_user.name,
         "profession": db_user.profession,
@@ -453,6 +470,43 @@ def update_core_profile(user_id: int, request: CoreProfileUpdate, db: GetDB):
             "name": db_user.name, 
             "profession": db_user.profession}
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# 3.6. NEW ENDPOINT: UPDATE CORE IDENTITY INFO (Email, DOB, Gender)
+# --------------------------------------------------------------------------
+@app.post("/api/v1/user/update_identity_info/{user_id}")
+def update_user_identity_info(user_id: int, request: IdentityUpdate, db: GetDB):
+    """Updates the user's non-KYC core identity information (Email, DOB, Gender)."""
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    # Convert the Pydantic model to a dictionary, excluding None values
+    update_fields = request.model_dump(exclude_none=True)
+
+    if "date_of_birth" in update_fields:
+        try:
+            # Convert string to Python date object for SQLAlchemy
+            dob_date = datetime.strptime(update_fields["date_of_birth"], "%Y-%m-%d").date()
+            update_fields["date_of_birth"] = dob_date
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="Invalid date format. Use YYYY-MM-DD."
+            )
+
+    # Apply all valid fields to the database object
+    for field, value in update_fields.items():
+        setattr(db_user, field, value)
+    
+    db.commit()
+    db.refresh(db_user)
+
+    return {"message": "User identity information updated successfully.", 
+            "user_id": user_id,
+            "email": db_user.email,
+            "date_of_birth": db_user.date_of_birth.strftime("%Y-%m-%d") if db_user.date_of_birth else None,
+            "gender": db_user.gender}
 
 
 # --------------------------------------------------------------------------
