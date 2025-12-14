@@ -39,6 +39,8 @@ function ProfileFlow() {
                             nextStep={nextStep} 
                             setUserId={setUserId}
                             setAccessToken={setAccessToken}
+                            userId={userId ? parseInt(userId) : null}
+                            accessToken={accessToken}
                         />;
             case 2:
                 // Pass key props to Tier 2 (StepTiers)

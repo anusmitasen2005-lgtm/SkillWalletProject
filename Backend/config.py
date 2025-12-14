@@ -16,16 +16,19 @@ class Settings(BaseSettings):
         extra='ignore' # Ignore variables not defined below
     )
 
-    # 1. Database Settings
-    DATABASE_URL: str
+    # 1. Database Settings (Optional - defaults to SQLite if not set)
+    DATABASE_URL: str = "sqlite:///./sql_app.db"
 
-    # 2. Security Settings
-    SECRET_KEY: str
+    # 2. Security Settings (Optional - defaults to a development key if not set)
+    SECRET_KEY: str = "dev-secret-key-change-in-production-12345"
     ALGORITHM: str = "HS256"
 
     # 3. OTP/Twilio Settings (CRITICAL FIX: Allow empty string if not found, preventing crashes)
     TWILIO_ACCOUNT_SID: str = Field(default="")
     TWILIO_AUTH_TOKEN: str = Field(default="")
     TWILIO_SERVICE_SID: str = Field(default="")
+
+    # 4. Admin/Owner Control
+    OWNER_USER_ID: int = Field(default=1)
 
 settings = Settings()

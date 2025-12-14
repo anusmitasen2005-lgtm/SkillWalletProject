@@ -1,8 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import axios from 'axios';
-
-// CRITICAL FIX 1: Use 127.0.0.1 for maximum stability with local backend host="0.0.0.0"
-const API_BASE_URL = 'http://127.0.0.1:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1';
 
 // Base styles for consistency
 const inputStyle = {
@@ -27,28 +25,19 @@ const buttonStyle = {
 };
 
 
-function StepIdentity({ nextStep, setUserId, setAccessToken }) {
+function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken }) {
     const [phoneNumber, setPhoneNumber] = useState('');
     const [otpCode, setOtpCode] = useState('');
-    const [flowState, setFlowState] = useState('input_phone'); // input_phone, input_otp, profile_setup
-    
+    const storedUserId = typeof window !== 'undefined' ? localStorage.getItem('userId') : null;
+    const storedAccessToken = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    const initialFlow = storedUserId && storedAccessToken ? 'profile_setup' : 'input_phone';
+    const [flowState, setFlowState] = useState(initialFlow);
     const [name, setName] = useState('');         
     const [profession, setProfession] = useState(''); 
     const [profilePhoto, setProfilePhoto] = useState(null); 
     const [formError, setFormError] = useState('');
-
-    // CRITICAL FIX 2: Aggressively check local storage to skip phone/OTP if already done
-    useEffect(() => {
-        const storedUserId = localStorage.getItem('userId');
-        const storedAccessToken = localStorage.getItem('accessToken');
-        
-        if (storedUserId && storedAccessToken) {
-            // User is logged in, skip directly to profile setup screen
-            setUserId(storedUserId);
-            setAccessToken(storedAccessToken);
-            setFlowState('profile_setup');
-        }
-    }, []);
+    const initialUserId = userId ?? (storedUserId ? parseInt(storedUserId) : null);
+    const initialAccessToken = accessToken ?? storedAccessToken;
 
 
     const handleSendOtp = async () => {
@@ -80,6 +69,18 @@ function StepIdentity({ nextStep, setUserId, setAccessToken }) {
                 
                 setAccessToken(response.data.access_token);
                 setUserId(newUserId); 
+
+                // Initialize Skill Wallet immediately after successful OTP verification
+                try {
+                    const initResp = await axios.post(`${API_BASE_URL}/wallet/initialize`, {
+                        phone_number: phoneNumber
+                    });
+                    if (initResp.data && initResp.data.wallet_hash) {
+                        localStorage.setItem('walletHash', initResp.data.wallet_hash);
+                    }
+                } catch (walletErr) {
+                    console.warn('Wallet initialization failed (non-critical):', walletErr);
+                }
                 
                 // CRITICAL CHANGE: Move to the profile setup screen first
                 setFlowState('profile_setup');
@@ -103,40 +104,69 @@ function StepIdentity({ nextStep, setUserId, setAccessToken }) {
         }
 
         try {
-            // 2. Handle Photo Upload FIRST (Optional)
-            if (profilePhoto) {
-                const formData = new FormData();
-                formData.append('file', profilePhoto);
-                
-                // Call the upload endpoint (profile_photo file_type)
-                await axios.post(
-                    `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=profile_photo`, 
-                    formData, 
-                    {
-                        headers: {
-                            Authorization: `Bearer ${accessToken}`,
-                            'Content-Type': 'multipart/form-data',
-                        },
-                    }
-                );
+            const currentUserId = initialUserId || userId;
+            const currentAccessToken = initialAccessToken || accessToken;
+            
+            // Validate userId is available
+            if (!currentUserId) {
+                setFormError('❌ User ID is missing. Please log in again.');
+                return;
             }
-
-            // 3. Submit the core profile data (Name, Profession)
-            // This is executed only AFTER the optional photo upload succeeds or is skipped.
-            await axios.post(`${API_BASE_URL}/user/update_core_profile/${userId}`, {
+            
+            // 1. FIRST: Save the core profile data (Name, Profession)
+            // This will fail fast if user doesn't exist, before attempting photo upload
+            console.log(`Submitting profile for userId: ${currentUserId}`, { name, profession });
+            
+            await axios.post(`${API_BASE_URL}/user/update_core_profile/${currentUserId}`, {
                 name: name,
                 profession: profession
             }, {
-                headers: { Authorization: `Bearer ${accessToken}` }
+                headers: { Authorization: `Bearer ${currentAccessToken}` }
             });
             
-            // 4. On success, proceed to the next step (Tier 2/Step 2)
-            nextStep(); 
+            // 2. THEN: Handle Photo Upload (Optional) - only if profile save succeeded
+            if (profilePhoto) {
+                try {
+                    const formData = new FormData();
+                    formData.append('file', profilePhoto);
+                    
+                    await axios.post(
+                        `${API_BASE_URL}/identity/tier2/upload/${currentUserId}?file_type=profile_photo`,
+                        formData, 
+                        {
+                            headers: {
+                                Authorization: `Bearer ${currentAccessToken}`,
+                                'Content-Type': 'multipart/form-data',
+                            },
+                        }
+                    );
+                } catch (photoError) {
+                    // Photo upload is optional, so we don't fail the whole process
+                    console.warn("Photo upload failed (non-critical):", photoError);
+                    // Don't show error - profile was saved successfully
+                }
+            }
+            
+            nextStep();
 
         } catch (error) {
             console.error("Error updating profile:", error);
-            // This error should now only appear if the backend is down or the schema is fundamentally wrong.
-            setFormError('Failed to save profile. Please check the backend connection.');
+            const errorDetail = error.response?.data?.detail || error.message || 'Unknown error';
+            const errorStatus = error.response?.status;
+            
+            if (!error.response) {
+                setFormError('❌ Cannot connect to backend server. Please ensure the backend is running on http://127.0.0.1:8000');
+            } else if (errorStatus === 404 && (errorDetail.includes('not found') || errorDetail.includes('User'))) {
+                // User not found - database was likely reset, clear localStorage and redirect
+                setFormError('❌ User session expired. Database was reset. Clearing session and reloading...');
+                localStorage.clear();
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+                return; // Don't proceed to nextStep
+            } else {
+                setFormError(`❌ Failed to save profile (Status: ${errorStatus}): ${errorDetail}`);
+            }
         }
     };
 

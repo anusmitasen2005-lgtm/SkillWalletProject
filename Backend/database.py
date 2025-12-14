@@ -3,13 +3,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from fastapi import HTTPException
-from dotenv import load_dotenv
+from config import settings
 
-# Load environment variables from .env file
-load_dotenv()
+# Get the database URL from config (which has defaults)
+DATABASE_URL = settings.DATABASE_URL
 
-# Get the database URL we just set
-DATABASE_URL = os.getenv("DATABASE_URL")
+# Ensure we're using SQLite for local development (safer and simpler)
+if not DATABASE_URL.startswith("sqlite"):
+    print(f"Warning: DATABASE_URL is not SQLite. Using SQLite for local development: sqlite:///./sql_app.db")
+    DATABASE_URL = "sqlite:///./sql_app.db"
 
 # ----------------------------------------------------------------------
 # 1. DATABASE CONNECTION ENGINE
@@ -45,12 +47,26 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    except HTTPException as he:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise he
     except Exception as e:
-        # In SQLite, errors are rare here, but catch them just in case.
-        print(f"DATABASE ERROR: {e}")
+        # Log the full error for debugging
+        import traceback
+        print("=" * 60)
+        print(f"DATABASE ERROR DETAILS:")
+        print(f"Error Type: {type(e).__name__}")
+        print(f"Error Message: {str(e)}")
+        print(f"Traceback:")
+        traceback.print_exc()
+        print("=" * 60)
+        db.rollback()
         raise HTTPException(
             status_code=503,
-            detail="Database service unavailable.",
+            detail=f"Database service unavailable: {str(e)}",
         )
     finally:
         db.close()

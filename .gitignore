@@ -1,0 +1,15 @@
+# Node and Python artefacts
+node_modules/
+__pycache__/
+.DS_Store
+
+# Local environment and secrets
+*.env
+Backend/.env
+
+# Uploaded user files
+uploaded_files/
+
+# Build outputs
+dist/
+build/

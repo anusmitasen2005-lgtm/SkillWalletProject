@@ -1,12 +1,11 @@
 import React, { useState, useRef } from 'react'; 
 import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1';
 
 // ----------------------------------------------------------------------
 // Flexible Domain Input Component (for custom skills)
 // ----------------------------------------------------------------------
-const FlexibleDomainInput = ({ id, label, options, currentValue, onChange, onCustomChange }) => {
+const FlexibleDomainInput = ({ label, options, currentValue, onChange, onCustomChange }) => {
     const isCustom = !options.includes(currentValue);
     const [selectValue, setSelectValue] = useState(isCustom ? 'custom' : currentValue);
 
@@ -56,7 +55,6 @@ const FlexibleDomainInput = ({ id, label, options, currentValue, onChange, onCus
 // ----------------------------------------------------------------------
 const VoiceRecorder = ({ audioUrl, setAudioUrl }) => {
     const [isRecording, setIsRecording] = useState(false);
-    const [audioBlob, setAudioBlob] = useState(null);
     const mediaRecorderRef = useRef(null);
     const chunksRef = useRef([]);
 
@@ -73,8 +71,6 @@ const VoiceRecorder = ({ audioUrl, setAudioUrl }) => {
 
             mediaRecorderRef.current.onstop = () => {
                 const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
-                setAudioBlob(blob);
-                
                 const tempUrl = URL.createObjectURL(blob);
                 setAudioUrl(tempUrl);
             };
@@ -125,7 +121,7 @@ const VoiceRecorder = ({ audioUrl, setAudioUrl }) => {
 };
 
 
-function StepFinalSummary({ userId, accessToken, nextStep }) {
+function StepFinalSummary({ userId, nextStep }) {
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
     
@@ -167,30 +163,50 @@ function StepFinalSummary({ userId, accessToken, nextStep }) {
         }
 
         try {
-            const response = await axios.post(`${API_BASE_URL}/work/submit/${userId}`, {
+            // If a local file was chosen, upload it to backend first to get a served path
+            let finalImageUrl = imageUrl;
+            if (imageFile) {
+                const formData = new FormData();
+                formData.append('file', imageFile);
+                const uploadResp = await axios.post(
+                    `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=proof`,
+                    formData,
+                    { headers: { 'Content-Type': 'multipart/form-data' } }
+                );
+                finalImageUrl = uploadResp.data.file_location; // e.g., uploaded_files/<user>/<file>
+            }
+            // If audio was recorded (blob: URL), upload it to backend to get a served path
+            let finalAudioUrl = audioUrl;
+            if (audioUrl && audioUrl.startsWith('blob:')) {
+                const blob = await fetch(audioUrl).then(r => r.blob());
+                const audioFile = new File([blob], `audio_story_${Date.now()}.webm`, { type: blob.type || 'audio/webm' });
+                const audioForm = new FormData();
+                audioForm.append('file', audioFile);
+                const audioUploadResp = await axios.post(
+                    `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=audio_story`,
+                    audioForm,
+                    { headers: { 'Content-Type': 'multipart/form-data' } }
+                );
+                finalAudioUrl = audioUploadResp.data.file_location;
+            }
+
+            // Step 1: Submit work and mint token (no grading, no AI summary)
+            await axios.post(`${API_BASE_URL}/work/submit/${userId}`, {
                 skill_name: skill,
-                image_url: imageUrl || 'N/A', 
-                audio_file_url: audioUrl || 'N/A', 
+                image_url: finalImageUrl || 'N/A', 
+                audio_file_url: finalAudioUrl || 'N/A', 
                 language_code: languageCode,
             });
             
-            const token = response.data.skill_token || 'SW-A3F7-229K';
+            // const token = response.data.skill_token || 'SW-A3F7-229K';
+            // const credentialId = response.data.credential_id;
 
-            // 1. Show immediate success message
-            setMessage(`🚀 Success! Backend says: ${response.data.message}`);
-            
-            // 2. Wait 2 seconds, show the final token message, and then transition
+            // Show success and proceed without grading/transcription
+            setMessage(`🚀 Token minted! Your proof is saved. Verification will happen later.`);
+
             setTimeout(() => {
-                // Show final message
-                setMessage(`🎖 Your Skill Wallet Token ${token} Has Been Minted!`);
-                
-                // CRITICAL FIX: Ensure nextStep() is called after the user reads the final message
-                // Use a small delay to ensure the last message renders before redirect
-                setTimeout(() => {
-                    nextStep(); 
-                }, 1000); 
-                
-            }, 2000); 
+                nextStep(); 
+            }, 1500);
 
         } catch (error) {
             setMessage(`Work Submission Failed: ${error.response?.data?.detail || 'Server error'}`);

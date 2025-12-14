@@ -4,7 +4,7 @@ import axios from 'axios';
 // import Profile from './Profile'; 
 import ProfileFlow from './ProfileFlow'; // <-- USING THE MULTI-STEP FLOW
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1';
 
 function App() {
     const [phoneNumber, setPhoneNumber] = useState('');
@@ -49,8 +49,15 @@ function App() {
             await axios.post(`${API_BASE_URL}/auth/otp/send`, { phone_number: formattedNumber });
             setMessage('🟢 OTP sent! Check your backend terminal for the code.');
         } catch (error) {
-            const status = error.response?.status;
-            setMessage(`OTP Send Failed (Status: ${status}). Please check backend logs.`);
+            console.error('OTP Send Error:', error);
+            if (!error.response) {
+                // Network error - backend not reachable
+                setMessage('❌ Cannot connect to backend server. Please ensure the backend is running on http://127.0.0.1:8000');
+            } else {
+                const status = error.response?.status;
+                const detail = error.response?.data?.detail || error.message;
+                setMessage(`❌ OTP Send Failed (Status: ${status}): ${detail}`);
+            }
         }
         setLoading(false);
     };
@@ -84,6 +91,20 @@ function App() {
                 setAccessToken(token); 
                 setIsLoggedIn(true); 
                 console.log('Login Successful, Access Token:', token); 
+                localStorage.setItem('userId', extractedUserId);
+                localStorage.setItem('accessToken', token);
+
+                // Initialize Skill Wallet immediately after successful OTP verification
+                try {
+                    const initResp = await axios.post(`${API_BASE_URL}/wallet/initialize`, {
+                        phone_number: formattedNumber
+                    });
+                    if (initResp.data && initResp.data.wallet_hash) {
+                        localStorage.setItem('walletHash', initResp.data.wallet_hash);
+                    }
+                } catch (walletErr) {
+                    console.warn('Wallet initialization failed (non-critical):', walletErr);
+                }
             } else {
                 setMessage('Verification failed: Could not parse User ID from token.');
             }

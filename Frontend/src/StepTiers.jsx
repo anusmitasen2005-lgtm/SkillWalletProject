@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1';
 
 // --- NEW: Reusable Component for Select OR Text Input ---
 // FIX: MOVED COMPONENT DEFINITION TO TOP LEVEL (OUTSIDE OF StepTiers FUNCTION)
-const FlexibleDomainInput = ({ id, label, options, currentValue, onChange, onCustomChange }) => {
+const FlexibleDomainInput = ({ label, options, currentValue, onChange, onCustomChange }) => {
     // Check if the current value is NOT one of the predefined options
     const isCustom = !options.includes(currentValue);
     
@@ -54,10 +54,38 @@ const FlexibleDomainInput = ({ id, label, options, currentValue, onChange, onCus
 };
 // END of FlexibleDomainInput component
 
-function StepTiers({ userId, accessToken, nextStep }) {
+// --- NEW: DocumentInput component moved to top level to avoid render-time creation ---
+const DocumentInput = ({ title, docType, isVerified, docs, setDocs, setFilesToUpload, loading, handleFileUploadAndSave }) => {
+    return (
+        <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '5px' }}>
+            <h5 style={{ color: isVerified ? '#28a745' : '#007bff', margin: '0 0 10px 0' }}>
+                {title} {isVerified ? '✅' : ''}
+            </h5>
+            <input
+                type="text"
+                placeholder={`${title} Number (Optional)`}
+                value={docs[`${docType}_number`]}
+                onChange={(e) => setDocs(prev => ({ ...prev, [`${docType}_number`]: e.target.value }))}
+                style={{ padding: '8px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
+            />
+            <input
+                type="file"
+                onChange={(e) => setFilesToUpload(prev => ({ ...prev, [docType]: e.target.files[0] }))}
+                style={{ padding: '10px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
+            />
+             <button onClick={() => handleFileUploadAndSave(docType)} disabled={loading} 
+                    style={{ padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '14px', width: '100%', marginTop: '5px' }}>
+                {loading ? 'Submitting...' : `Submit ${title} Proof`}
+            </button>
+        </div>
+    );
+};
+
+function StepTiers({ userId, nextStep }) {
     const [profile, setProfile] = useState(null);
     const [loading, setLoading] = useState(true);
     const [message, setMessage] = useState('');
+    const [hasInitializedDocs, setHasInitializedDocs] = useState(false);
     
     // State for documents (number input and the actual File object)
     const [docs, setDocs] = useState({
@@ -74,35 +102,51 @@ function StepTiers({ userId, accessToken, nextStep }) {
         aadhaar: null, pan: null, voter: null, driving_license: null, ration_card: null
     });
     
-    useEffect(() => {
-        fetchProfileData();
-    }, [userId]);
-
-    const fetchProfileData = async () => {
-        try {
-            const response = await axios.get(`${API_BASE_URL}/user/profile/${userId}`);
-            setProfile(response.data);
-            setLoading(false);
-            
-            // Populate the form fields with existing data
+    const reloadProfile = useCallback(async () => {
+        const response = await axios.get(`${API_BASE_URL}/user/profile/${userId}`);
+        setProfile(response.data);
+        setLoading(false);
+        if (!hasInitializedDocs) {
             setDocs(prev => ({ 
                 ...prev,
-                primary_domain_identity: response.data.skill_tag || 'Construction', 
-                // Restore power skill state if available
-                differentiating_power_skill: response.data.power_skill_tag || 'Teaching/Mentoring',
+                primary_domain_identity: response.data.skill_tag || prev.primary_domain_identity, 
+                differentiating_power_skill: response.data.power_skill_tag || prev.differentiating_power_skill,
             }));
-            
-        } catch (error) {
-            setMessage('Error fetching identity status. (Ensure Backend is running)');
-            setLoading(false);
+            setHasInitializedDocs(true);
         }
-    };
+    }, [userId, hasInitializedDocs]);
+    
+    useEffect(() => {
+        const id = setTimeout(() => {
+            reloadProfile().catch(() => {
+                setMessage('Error fetching identity status. (Ensure Backend is running)');
+                setLoading(false);
+            });
+        }, 0);
+        return () => clearTimeout(id);
+    }, [userId, reloadProfile]);
     
     // --- Document Submission Handlers (File Upload & Text Update) ---
     const handleFileUploadAndSave = async (docType) => {
         const file = filesToUpload[docType];
+        const numberFieldMap = {
+            aadhaar: 'aadhaar_number',
+            pan: 'pan_card_number',
+            voter: 'voter_id_number',
+            driving_license: 'driving_license_number',
+            ration_card: 'ration_card_number',
+        };
+        const filePathFieldMap = {
+            aadhaar: 'aadhaar_file_path',
+            pan: 'pan_card_file_path',
+            voter: 'voter_id_file_path',
+            driving_license: 'driving_license_file_path',
+            ration_card: 'ration_card_file_path',
+        };
+        const numberField = numberFieldMap[docType];
+        const filePathField = filePathFieldMap[docType];
         
-        if (docs[`${docType}_number`] || file) {
+        if (docs[numberField] || file) {
             setLoading(true);
             setMessage('');
 
@@ -121,20 +165,20 @@ function StepTiers({ userId, accessToken, nextStep }) {
                     
                     // 2. Update the number and file path text fields
                     await axios.post(`${API_BASE_URL}/identity/tier2/${userId}`, {
-                        [`${docType}_number`]: docs[`${docType}_number`],
-                        [`${docType}_file_path`]: uploadResponse.data.file_location
+                        [numberField]: docs[numberField],
+                        [filePathField]: uploadResponse.data.file_location
                     });
                 }
                 
                 // If only the number was entered, just update the text fields
-                else if (docs[`${docType}_number`]) {
+                else if (docs[numberField]) {
                      await axios.post(`${API_BASE_URL}/identity/tier2/${userId}`, {
-                        [`${docType}_number`]: docs[`${docType}_number`],
+                        [numberField]: docs[numberField],
                      });
                 }
                 
                 setMessage(`🟢 ${docType.toUpperCase()} proofs updated. Upload more documents to increase your score!`);
-                fetchProfileData();
+                await reloadProfile();
                 
             } catch (error) {
                 setMessage(`Upload Failed for ${docType}: ${error.response?.data?.detail || 'Server error'}`);
@@ -157,7 +201,7 @@ function StepTiers({ userId, accessToken, nextStep }) {
             });
             
             setMessage(`✅ Identity and Proofs saved!`);
-            fetchProfileData();
+            await reloadProfile();
 
         } catch (error) {
             setMessage(`Submission Failed: ${error.response?.data?.detail || 'Server error'}`);
@@ -166,31 +210,7 @@ function StepTiers({ userId, accessToken, nextStep }) {
     };
 
 
-    const DocumentInput = ({ title, docType, isVerified }) => {
-        return (
-            <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '5px' }}>
-                <h5 style={{ color: isVerified ? '#28a745' : '#007bff', margin: '0 0 10px 0' }}>
-                    {title} {isVerified ? '✅' : ''}
-                </h5>
-                <input
-                    type="text"
-                    placeholder={`${title} Number (Optional)`}
-                    value={docs[`${docType}_number`]}
-                    onChange={(e) => setDocs(prev => ({ ...prev, [`${docType}_number`]: e.target.value }))}
-                    style={{ padding: '8px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
-                />
-                <input
-                    type="file"
-                    onChange={(e) => setFilesToUpload(prev => ({ ...prev, [docType]: e.target.files[0] }))}
-                    style={{ padding: '10px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
-                />
-                 <button onClick={() => handleFileUploadAndSave(docType)} disabled={loading} 
-                        style={{ padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '14px', width: '100%', marginTop: '5px' }}>
-                    {loading ? 'Submitting...' : `Submit ${title} Proof`}
-                </button>
-            </div>
-        );
-    };
+    
 
     if (loading) return <div style={{ textAlign: 'center' }}>Loading Verification Core...</div>;
     if (!profile) return <div style={{ textAlign: 'center', color: 'red' }}>Could not load user profile.</div>;
@@ -222,7 +242,6 @@ function StepTiers({ userId, accessToken, nextStep }) {
                 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
                     <FlexibleDomainInput
-                        id="primary_domain"
                         label="Primary Domain Identity (Trade/Profession)"
                         options={['Construction', 'Apparel', 'Automotive Repair', 'Food Service', 'Textile Arts', 'Carpenter', 'Painter', 'Welder']}
                         currentValue={docs.primary_domain_identity}
@@ -231,7 +250,6 @@ function StepTiers({ userId, accessToken, nextStep }) {
                     />
 
                     <FlexibleDomainInput
-                        id="power_skill"
                         label="Differentiating Power Skill (Soft Skill)"
                         options={['Teaching/Mentoring', 'Finance/Accounting', 'Quality Control', 'Customer Service', 'Problem Solving', 'Leadership', 'Negotiation', 'Digital Literacy']}
                         currentValue={docs.differentiating_power_skill}
@@ -258,11 +276,11 @@ function StepTiers({ userId, accessToken, nextStep }) {
                 </h4>
                 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                    <DocumentInput title="Aadhaar Card" docType="aadhaar" isVerified={!!profile.aadhaar_file_path} />
-                    <DocumentInput title="PAN Card" docType="pan" isVerified={!!profile.pan_card_file_path} />
-                    <DocumentInput title="Voter ID" docType="voter" isVerified={!!profile.voter_id_file_path} />
-                    <DocumentInput title="Driving License" docType="driving_license" isVerified={!!profile.driving_license_file_path} />
-                    <DocumentInput title="Ration Card" docType="ration_card" isVerified={!!profile.ration_card_file_path} />
+                    <DocumentInput title="Aadhaar Card" docType="aadhaar" isVerified={!!profile.aadhaar_file_path} docs={docs} setDocs={setDocs} setFilesToUpload={setFilesToUpload} loading={loading} handleFileUploadAndSave={handleFileUploadAndSave} />
+                    <DocumentInput title="PAN Card" docType="pan" isVerified={!!profile.pan_card_file_path} docs={docs} setDocs={setDocs} setFilesToUpload={setFilesToUpload} loading={loading} handleFileUploadAndSave={handleFileUploadAndSave} />
+                    <DocumentInput title="Voter ID" docType="voter" isVerified={!!profile.voter_id_file_path} docs={docs} setDocs={setDocs} setFilesToUpload={setFilesToUpload} loading={loading} handleFileUploadAndSave={handleFileUploadAndSave} />
+                    <DocumentInput title="Driving License" docType="driving_license" isVerified={!!profile.driving_license_file_path} docs={docs} setDocs={setDocs} setFilesToUpload={setFilesToUpload} loading={loading} handleFileUploadAndSave={handleFileUploadAndSave} />
+                    <DocumentInput title="Ration Card" docType="ration_card" isVerified={!!profile.ration_card_file_path} docs={docs} setDocs={setDocs} setFilesToUpload={setFilesToUpload} loading={loading} handleFileUploadAndSave={handleFileUploadAndSave} />
                 </div>
                 
                 {/* COMBINED SUBMISSION/NAVIGATION BUTTONS - CORRECT PLACEMENT */}

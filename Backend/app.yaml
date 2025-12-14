@@ -1,0 +1,8 @@
+runtime: python39  # Specifies Python version 3.9
+
+# We use gunicorn to run multiple Uvicorn worker processes concurrently,
+# making the application robust and fast.
+entrypoint: gunicorn -w 4 -k uvicorn.workers.UvicornWorker main:app
+
+# Instance class determines the performance level. F2 is a solid starter.
+instance_class: F2
