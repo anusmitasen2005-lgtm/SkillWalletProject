@@ -2,6 +2,18 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000/api/v1';
+const API_HOST = API_BASE_URL.replace('/api/v1', '');
+const toProofUrl = (p) => {
+    if (!p || p === 'N/A') return null;
+    const s = String(p).replace(/\\\\/g, '/').replace(/\\/g, '/');
+    if (s.startsWith('http://') || s.startsWith('https://') || s.startsWith('blob:')) return s;
+    if (s.startsWith('/proofs/')) return `${API_HOST}${s}`;
+    if (s.startsWith('uploaded_files/')) {
+        const tail = s.replace(/^uploaded_files\//, '');
+        return `${API_HOST}/proofs/${tail}`;
+    }
+    return `${API_HOST}/proofs/${s}`;
+};
 
 // Helper function to check if a document was uploaded
 const isDocSubmitted = (path) => {
@@ -21,15 +33,18 @@ const generateResumeHtml = (profile, microProofs) => {
     const proofSkills = microProofs.map(p => p.skill);
     const allSkills = [...new Set([profile.skill_tag, profile.power_skill_tag, ...proofSkills])];
 
-    const proofsSection = microProofs.map(item => `
+    const proofsSection = microProofs.map(item => {
+        const link = toProofUrl(item.visualProofUrl);
+        return `
         <div style="margin-bottom: 15px; border: 1px solid #eee; padding: 10px; border-radius: 4px;">
             <h4 style="color: #28a745; margin: 0;">${item.title} (${item.skill})</h4>
             <p style="margin: 0;">
-                <strong>Proof (Visual):</strong> ${item.visualProofUrl ? `<a href="${API_BASE_URL.replace('/api/v1', '')}/proofs/${item.visualProofUrl}" target="_blank">${item.visualProofUrl}</a>` : 'N/A'}<br/>
+                <strong>Proof (Visual):</strong> ${link ? `<a href="${link}" target="_blank">${item.visualProofUrl}</a>` : 'N/A'}<br/>
                 <strong>Audio Transcript:</strong> ${item.transcription ? item.transcription.substring(0, 150) + '...' : 'N/A'}
             </p>
         </div>
-    `).join('');
+    `;
+    }).join('');
     
     return `
         <html>
@@ -72,8 +87,7 @@ const PortfolioItem = ({ item }) => {
     // Function to open the proof URL in a new window/tab
     const handleViewVisualProof = () => {
         if (item.visualProofUrl && item.visualProofUrl !== 'N/A') {
-            // Use the full URL now that the backend serves static files
-            const fullUrl = `${API_BASE_URL.replace('/api/v1', '')}/proofs/${item.visualProofUrl}`; 
+            const fullUrl = toProofUrl(item.visualProofUrl);
             window.open(fullUrl, '_blank');
         } else {
             alert("Visual proof URL not submitted for this item.");
@@ -83,7 +97,7 @@ const PortfolioItem = ({ item }) => {
     // Function to open the Audio Story in a new tab
     const handleViewAudioProof = () => {
         if (item.audioStoryUrl && item.audioStoryUrl !== 'N/A') {
-            const fullUrl = `${API_BASE_URL.replace('/api/v1', '')}/proofs/${item.audioStoryUrl}`; 
+            const fullUrl = toProofUrl(item.audioStoryUrl);
             window.open(fullUrl, '_blank');
         } else {
             alert("Audio story URL not submitted for this item.");
@@ -98,7 +112,20 @@ const PortfolioItem = ({ item }) => {
                 <p style={{ margin: '5px 0', color: '#6c757d', fontSize: '0.85em' }}>Submitted: {item.issued_date}</p>
             )}
             <p style={{ margin: '5px 0' }}><strong>Status:</strong> {item.verification_status}</p>
-            <p style={{ margin: '5px 0' }}><strong>Score:</strong> {typeof item.grade_score === 'number' ? item.grade_score : 0}</p>
+            <p style={{ margin: '5px 0' }}>
+                <strong>Score (300–900):</strong>{' '}
+                {typeof item.grade_score === 'number' && item.grade_score >= 300 ? item.grade_score : 'Pending'}
+                {' '}
+                <span style={{ color: '#6c757d' }}>
+                    {typeof item.grade_score === 'number' && item.grade_score >= 750
+                        ? 'Ideal'
+                        : typeof item.grade_score === 'number' && item.grade_score >= 700
+                        ? 'Good–Excellent'
+                        : typeof item.grade_score === 'number' && item.grade_score >= 600
+                        ? 'Developing'
+                        : 'Needs improvement'}
+                </span>
+            </p>
             
             {/* Transcription Block */}
             <div style={{ padding: '10px', backgroundColor: '#f0f8ff', borderLeft: '3px solid #007bff', margin: '10px 0' }}>
@@ -113,7 +140,7 @@ const PortfolioItem = ({ item }) => {
                 <div style={{ marginTop: '8px' }}>
                     <audio 
                         controls 
-                        src={`${API_BASE_URL.replace('/api/v1', '')}/proofs/${item.audioStoryUrl}`} 
+                        src={toProofUrl(item.audioStoryUrl)} 
                         style={{ width: '100%' }} 
                     />
                 </div>
@@ -156,8 +183,7 @@ function StepCompleted({ jumpToStep, userId }) {
     const [selectedUserDetails, setSelectedUserDetails] = useState(null);
     const [adminError, setAdminError] = useState('');
     const [customToken, setCustomToken] = useState('');
-    const apiBaseHost = API_BASE_URL.replace('/api/v1', '');
-    const accessToken = typeof window !== 'undefined' ? window.localStorage.getItem('access_token') : null;
+    // Token is read when needed directly from localStorage
 
     // Helper function for delay
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -209,14 +235,15 @@ function StepCompleted({ jumpToStep, userId }) {
             });
             setAllUsers(res.data || []);
             setAdminError('');
-        } catch (e) {
+        } catch {
             setAllUsers([]);
             setAdminError('Admin access required. Please log in as owner.');
         }
     };
 
     useEffect(() => {
-        refreshAdminList();
+        const id = setTimeout(() => { refreshAdminList(); }, 0);
+        return () => clearTimeout(id);
     }, []);
 
     const handleViewUserDetails = async (uid) => {
@@ -227,7 +254,7 @@ function StepCompleted({ jumpToStep, userId }) {
             });
             setSelectedUserDetails(res.data);
             setAdminError('');
-        } catch (e) {
+        } catch {
             setSelectedUserDetails(null);
             setAdminError('Admin access required. Please log in as owner.');
         }
@@ -237,7 +264,7 @@ function StepCompleted({ jumpToStep, userId }) {
         try {
             window.localStorage.setItem('access_token', 'DEBUG_ACCESS_TOKEN_for_2');
             await refreshAdminList();
-        } catch (e) {
+        } catch {
             setAdminError('Failed to set owner token.');
         }
     };
@@ -250,7 +277,7 @@ function StepCompleted({ jumpToStep, userId }) {
             }
             window.localStorage.setItem('access_token', customToken.trim());
             await refreshAdminList();
-        } catch (e) {
+        } catch {
             setAdminError('Failed to set custom token.');
         }
     };
@@ -320,7 +347,7 @@ function StepCompleted({ jumpToStep, userId }) {
                 <div style={{ display: 'flex', alignItems: 'center' }}>
                     {profile.profile_photo_file_path ? (
                         <img 
-                            src={`${API_BASE_URL.replace('/api/v1', '')}/proofs/${String(profile.profile_photo_file_path).replace(/\\\\/g, '/').replace(/\\/g, '/')}`}
+                            src={toProofUrl(String(profile.profile_photo_file_path).replace(/\\\\/g, '/').replace(/\\/g, '/'))}
                             alt="Profile Photo" 
                             style={{ width: '80px', height: '80px', borderRadius: '50%', objectFit: 'cover', border: '3px solid #ffc107' }}
                         />
@@ -367,6 +394,28 @@ function StepCompleted({ jumpToStep, userId }) {
                         Add New Work
                     </button>
                 </div>
+            </div>
+
+            <div style={{ marginTop: '20px', padding: '20px', backgroundColor: '#fff', borderRadius: '10px', boxShadow: '0 4px 10px rgba(0,0,0,0.1)' }}>
+                <h3 style={{ color: '#007bff', borderBottom: '1px solid #007bff', paddingBottom: '10px' }}>Identity Documents</h3>
+                {[...docStatuses, ...profStatuses].map((d, idx) => {
+                    const url = toProofUrl(String(d.path || '').replace(/\\\\/g, '/').replace(/\\/g, '/'));
+                    return (
+                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px dotted #eee' }}>
+                            <div>
+                                <strong>{d.name}</strong> <span style={{ color: '#6c757d' }}>({d.type})</span>
+                            </div>
+                            <div>
+                                <span style={statusStyle(isDocSubmitted(d.path))}>{isDocSubmitted(d.path) ? 'Submitted' : 'Missing'}</span>
+                                {url && (
+                                    <button onClick={() => window.open(url, '_blank')} style={{ marginLeft: '10px', padding: '4px 8px', backgroundColor: '#17a2b8', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+                                        View
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })}
             </div>
 
             <div style={{ marginTop: '30px', padding: '20px', backgroundColor: '#fff', borderRadius: '10px', boxShadow: '0 4px 10px rgba(0,0,0,0.1)' }}>
@@ -426,29 +475,29 @@ function StepCompleted({ jumpToStep, userId }) {
                                 <p><strong>Phone:</strong> {selectedUserDetails.profile?.phone_number || 'N/A'}</p>
                                 <p><strong>Email:</strong> {selectedUserDetails.profile?.email || 'N/A'}</p>
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '10px' }}>
-                                    {selectedUserDetails.profile?.aadhaar_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.aadhaar_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Aadhaar</button>
+                        {selectedUserDetails.profile?.aadhaar_file_path && (
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.aadhaar_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Aadhaar</button>
                                     )}
                                     {selectedUserDetails.profile?.pan_card_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.pan_card_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View PAN</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.pan_card_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View PAN</button>
                                     )}
                                     {selectedUserDetails.profile?.voter_id_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.voter_id_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Voter ID</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.voter_id_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Voter ID</button>
                                     )}
                                     {selectedUserDetails.profile?.driving_license_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.driving_license_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Driving License</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.driving_license_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Driving License</button>
                                     )}
                                     {selectedUserDetails.profile?.ration_card_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.ration_card_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Ration Card</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.ration_card_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Ration Card</button>
                                     )}
                                     {selectedUserDetails.profile?.recommendation_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.recommendation_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Recommendation</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.recommendation_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Recommendation</button>
                                     )}
                                     {selectedUserDetails.profile?.previous_certificates_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.previous_certificates_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Certificates</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.previous_certificates_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Certificates</button>
                                     )}
                                     {selectedUserDetails.profile?.past_jobs_proof_file_path && (
-                                        <button onClick={() => window.open(`${apiBaseHost}/proofs/${selectedUserDetails.profile.past_jobs_proof_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Past Jobs Proof</button>
+                                        <button onClick={() => window.open(toProofUrl(selectedUserDetails.profile.past_jobs_proof_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Past Jobs Proof</button>
                                     )}
                                 </div>
                             </div>
@@ -460,12 +509,12 @@ function StepCompleted({ jumpToStep, userId }) {
                                             <div><strong>{p.title}</strong> <span style={{ color: '#6c757d' }}>({p.issued_date || 'Unknown'})</span></div>
                                             <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
                                                 {p.visualProofUrl && (
-                                                    <button onClick={() => window.open(`${apiBaseHost}/proofs/${p.visualProofUrl}`, '_blank')} style={{ padding: '6px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px' }}>
+                                                    <button onClick={() => window.open(toProofUrl(p.visualProofUrl), '_blank')} style={{ padding: '6px 10px', backgroundColor: '#28a745', color: 'white', border: 'none', borderRadius: '4px' }}>
                                                         View Visual
                                                     </button>
                                                 )}
                                                 {p.audioStoryUrl && (
-                                                    <button onClick={() => window.open(`${apiBaseHost}/proofs/${p.audioStoryUrl}`, '_blank')} style={{ padding: '6px 10px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px' }}>
+                                                    <button onClick={() => window.open(toProofUrl(p.audioStoryUrl), '_blank')} style={{ padding: '6px 10px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px' }}>
                                                         View Audio
                                                     </button>
                                                 )}
@@ -521,35 +570,35 @@ function StepCompleted({ jumpToStep, userId }) {
                             </span>
                         </div>
                     ))}
-                    <div style={{ marginTop: '15px' }}>
-                        <h4 style={{ color: '#333', marginTop: '20px' }}>View Submitted Documents:</h4>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                        <div style={{ marginTop: '15px' }}>
+                            <h4 style={{ color: '#333', marginTop: '20px' }}>View Submitted Documents:</h4>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                             {profile.aadhaar_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.aadhaar_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Aadhaar</button>
+                                <button onClick={() => window.open(toProofUrl(profile.aadhaar_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Aadhaar</button>
                             )}
                             {profile.pan_card_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.pan_card_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View PAN</button>
+                                <button onClick={() => window.open(toProofUrl(profile.pan_card_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View PAN</button>
                             )}
                             {profile.voter_id_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.voter_id_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Voter ID</button>
+                                <button onClick={() => window.open(toProofUrl(profile.voter_id_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Voter ID</button>
                             )}
                             {profile.driving_license_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.driving_license_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Driving License</button>
+                                <button onClick={() => window.open(toProofUrl(profile.driving_license_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Driving License</button>
                             )}
                             {profile.ration_card_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.ration_card_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Ration Card</button>
+                                <button onClick={() => window.open(toProofUrl(profile.ration_card_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#007bff', color: 'white', border: 'none', borderRadius: '5px' }}>View Ration Card</button>
                             )}
-                        </div>
-                        <h4 style={{ color: '#333', marginTop: '20px' }}>Professional Proofs:</h4>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                            </div>
+                            <h4 style={{ color: '#333', marginTop: '20px' }}>Professional Proofs:</h4>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                             {profile.recommendation_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.recommendation_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Recommendation</button>
+                                <button onClick={() => window.open(toProofUrl(profile.recommendation_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Recommendation</button>
                             )}
                             {profile.previous_certificates_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.previous_certificates_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Certificates</button>
+                                <button onClick={() => window.open(toProofUrl(profile.previous_certificates_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Certificates</button>
                             )}
                             {profile.past_jobs_proof_file_path && (
-                                <button onClick={() => window.open(`${apiBaseHost}/proofs/${profile.past_jobs_proof_file_path}`, '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Past Jobs Proof</button>
+                                <button onClick={() => window.open(toProofUrl(profile.past_jobs_proof_file_path), '_blank')} style={{ padding: '8px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px' }}>View Past Jobs Proof</button>
                             )}
                             {profile.community_verifier_id && (
                                 <div style={{ padding: '8px', backgroundColor: '#f8f9fa', borderRadius: '5px', border: '1px solid #eee' }}>

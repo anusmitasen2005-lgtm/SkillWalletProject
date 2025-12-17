@@ -1,15 +1,25 @@
-# Node and Python artefacts
-node_modules/
-__pycache__/
+# Global ignores for the Skill Wallet project
+
+# OS/editor noise
 .DS_Store
+.vscode/
+.idea/
+*.log
 
-# Local environment and secrets
-*.env
+# Root-level env
+.env
+
+# Python backend
+Backend/__pycache__/
 Backend/.env
+Backend/venv/
+Backend/.venv/
+Backend/sql_app.db
+Backend/uploaded_files/
 
-# Uploaded user files
-uploaded_files/
+# Node frontend (duplicated here for safety)
+Frontend/node_modules/
+Frontend/dist/
+Frontend/dist-ssr/
+Frontend/*.local
 
-# Build outputs
-dist/
-build/

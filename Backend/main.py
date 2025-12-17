@@ -16,31 +16,12 @@ from datetime import datetime
 from typing import Annotated, Optional, List 
 import os 
 import shutil 
-# Optional Twilio imports (only needed if Twilio is configured)
-try:
-    from twilio.rest import Client
-    from twilio.base.exceptions import TwilioRestException
-    TWILIO_AVAILABLE = True
-except ImportError:
-    TWILIO_AVAILABLE = False
-    print("⚠️  Twilio package not installed. Running in development mode (OTP printed to console).")
-import hashids # CRITICAL: Import hashids for wallet generation
+from twilio.rest import Client # NEW: Import Twilio Client
+from twilio.base.exceptions import TwilioRestException # NEW: Import Twilio Exception
+from llm_utils import is_openai_configured, transcribe_audio_llm, evaluate_with_llm
 
-# --- Database initialization ---
-30→try:
-31→    print("=" * 60)
-32→    print("Initializing database...")
-33→    # Create tables if they do not exist
-34→    models.Base.metadata.create_all(bind=engine)
-35→    print("✅ Database tables ensured!")
-36→    print("=" * 60)
-37→except Exception as e:
-38→    print("=" * 60)
-39→    print(f"❌ ERROR creating database tables: {e}")
-40→    import traceback
-41→    traceback.print_exc()
-42→    print("=" * 60)
-43→    # Don't exit - let the app start and show the error in API calls
+# --- CRITICAL FIX 1: Guaranteed Table Creation ---
+models.Base.metadata.create_all(bind=engine)
 # --------------------------------------------------------------------------
 
 # Initialize the main FastAPI application
@@ -55,10 +36,7 @@ app = FastAPI(
 # --------------------------------------------------------------------------
 # CORS CONFIGURATION (Unchanged)
 # --------------------------------------------------------------------------
-origins = [
-    "http://localhost:5173", 
-    "http://127.0.0.1:5173",
-]
+origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -112,6 +90,14 @@ def get_current_user_id(token: str = Depends(get_token_header)) -> int:
             detail="Invalid token structure: User ID missing.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+def _is_owner(db: GetDB, user_id: int) -> bool:
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        return False
+    def _norm(s: str) -> str:
+        return "".join(ch for ch in str(s) if ch.isdigit())
+    return _norm(user.phone_number) == "919106983613"
 
 # --------------------------------------------------------------------------
 # 1. SCHEMAS (Data validation models)
@@ -170,7 +156,7 @@ class CoreProfileUpdate(BaseModel):
 class IdentityUpdate(BaseModel):
     email: Optional[str] = Field(None, example="user@example.com") 
     date_of_birth: Optional[str] = Field(None, example="1990-01-01", 
-                                             description="Date of birth in YYYY-MM-DD format.")
+                                         description="Date of birth in YYYY-MM-DD format.")
     gender: Optional[str] = Field(None, example="Male") 
 
 # --- NEW: Schema for requesting a credential review (Task 911) ---
@@ -184,14 +170,85 @@ class GradeSubmission(BaseModel):
                              description="Final score (0-100) assigned by reviewer/AI.")
     final_notes: Optional[str] = Field(None, example="Excellent quality and clear audio description.")
 
-# --- NEW: Schemas for Wallet Initialization (CRITICAL FIX) ---
-class WalletInitializeRequest(BaseModel):
-    phone_number: str = Field(pattern=r"^\+?[0-9]{10,14}$", example="+919876543210")
 
-class WalletInitializeResponse(BaseModel):
-    user_id: int
-    wallet_hash: str
+def _safe_filesize(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
 
+def _local_file_path_from_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    if url.startswith("/proofs/"):
+        return os.path.join("uploaded_files", url.split("/proofs/")[-1])
+    if url.startswith("http://127.0.0.1:8000/proofs/") or url.startswith("http://localhost:8000/proofs/"):
+        tail = url.split("/proofs/")[-1]
+        return os.path.join("uploaded_files", tail)
+    if url.startswith("uploaded_files"):
+        return url
+    return None
+
+def _assess_authenticity(db: GetDB, user_id: int, proof_url: str) -> int:
+    local_path = _local_file_path_from_url(proof_url)
+    size = _safe_filesize(local_path) if local_path else 0
+    base = 50 if local_path else 10
+    if size > 500_000:
+        base += 30
+    if size > 2_000_000:
+        base += 20
+    dup = db.query(models.SkillCredential).filter(models.SkillCredential.proof_url == proof_url).count()
+    if dup > 1:
+        base -= 30
+    return max(0, min(100, base))
+
+def _transcribe_audio_stub(audio_url: str, language_code: str) -> str:
+    name = os.path.basename(audio_url or "")
+    return f"{language_code}:{name}".strip()
+
+def _explanation_quality(transcription: str) -> int:
+    t = (transcription or "").lower()
+    length = len(t)
+    score = 10
+    markers = ["first", "second", "then", "next", "finally", "step", "process", "material", "tool"]
+    hits = sum(1 for m in markers if m in t)
+    score += min(40, hits * 8)
+    if length > 120:
+        score += 20
+    if length > 300:
+        score += 15
+    return max(0, min(100, score))
+
+def _visual_quality(proof_url: str) -> int:
+    local_path = _local_file_path_from_url(proof_url)
+    size = _safe_filesize(local_path) if local_path else 0
+    ext = (os.path.splitext(proof_url or "")[1] or "").lower()
+    score = 10
+    if ext in [".mp4", ".mov", ".webm"]:
+        score += 25
+    if ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        score += 15
+    if size > 500_000:
+        score += 25
+    if size > 2_000_000:
+        score += 25
+    return max(0, min(100, score))
+
+def _alignment(transcription: str, skill_name: str, proof_url: str) -> float:
+    t = (transcription or "").lower()
+    s = (skill_name or "").lower()
+    ok = 0
+    if s and s in t:
+        ok += 1
+    if "image" in t and any(x in proof_url.lower() for x in [".jpg", ".jpeg", ".png", ".webp"]):
+        ok += 1
+    if "video" in t and any(x in proof_url.lower() for x in [".mp4", ".mov", ".webm"]):
+        ok += 1
+    return 0.6 + 0.2 * ok
+
+def _final_score(auth_c: int, vis_q: int, exp_q: int, align: float) -> int:
+    raw = 0.4 * auth_c + 0.35 * vis_q + 0.25 * exp_q
+    return int(max(0, min(100, round(raw * align))))
 
 # --------------------------------------------------------------------------
 # 2. TIER 1 PHONE AUTHENTICATION ENDPOINTS (MODIFIED FOR LIVE TWILIO)
@@ -213,29 +270,12 @@ def send_otp(request: PhoneRequest, db: GetDB):
     db.commit() # Save hash before calling Twilio
     db.refresh(db_user)
     
-    # --- DEVELOPMENT MODE: Check if Twilio is configured and available ---
-    twilio_configured = (
-        TWILIO_AVAILABLE and
-        settings.TWILIO_ACCOUNT_SID and 
-        settings.TWILIO_AUTH_TOKEN and 
-        settings.TWILIO_SERVICE_SID and
-        settings.TWILIO_ACCOUNT_SID != "" and
-        settings.TWILIO_AUTH_TOKEN != "" and
-        settings.TWILIO_SERVICE_SID != ""
-    )
+    # Short-circuit for local development when Twilio is not configured
+    if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN or not settings.TWILIO_SERVICE_SID:
+        print(f"DEBUG: OTP code for {phone_number}: {otp_code}")
+        return {"message": "OTP sending disabled for local development.", "status": "pending"}
     
-    if not twilio_configured:
-        # DEVELOPMENT MODE: Print OTP to console instead of sending via Twilio
-        print("=" * 60)
-        print("🔧 DEVELOPMENT MODE: Twilio not configured")
-        print(f"📱 Phone Number: {phone_number}")
-        print(f"🔑 OTP Code: {otp_code}")
-        print("=" * 60)
-        print("⚠️  Use this OTP code to verify. In production, configure Twilio credentials.")
-        print("=" * 60)
-        return {"message": "OTP sent successfully (Development Mode). Check backend terminal for code.", "status": "pending"}
-    
-    # --- PRODUCTION MODE: LIVE TWILIO SENDING LOGIC ---
+    # --- LIVE TWILIO SENDING LOGIC (Client Initialized in function) ---
     try:
         # CRITICAL: Initialize client here to avoid startup crash
         local_twilio_client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
@@ -245,31 +285,31 @@ def send_otp(request: PhoneRequest, db: GetDB):
             .verifications \
             .create(to=phone_number, channel='sms')
         
-        # SUCCESS: Return 200 OK status to the frontend
-        print(f"✅ Successfully sent OTP via Twilio to {phone_number}.")
-        return {"message": "OTP sent successfully via SMS.", "status": "pending"}
+    except TwilioRestException as e:
+        # LOG THE REAL TWILIO ERROR
+        print("-" * 50)
+        print(f"!!! CRITICAL TWILIO REST EXCEPTION !!!")
+        print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
+        print("-" * 50)
         
+        # Raise an HTTPException with a specific detail
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="OTP service failed. Check server logs for Twilio error code."
+        )
     except Exception as e:
-        # Check if it's a Twilio exception
-        if TWILIO_AVAILABLE and hasattr(e, 'code') and hasattr(e, 'status') and hasattr(e, 'msg'):
-            # LOG THE REAL TWILIO ERROR
-            print("-" * 50)
-            print(f"!!! CRITICAL TWILIO REST EXCEPTION !!!")
-            print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
-            print("-" * 50)
-        else:
-            # Catch any other failure (e.g., failed client initialization due to bad config)
-            print("-" * 50)
-            print(f"!!! GENERIC SERVER ERROR (Twilio Client Init/Call Failed): {type(e).__name__}: {e} !!!")
-            print("-" * 50)
-        
-        # Fallback to development mode if Twilio fails
-        print("=" * 60)
-        print("⚠️  Twilio failed, falling back to Development Mode")
-        print(f"📱 Phone Number: {phone_number}")
-        print(f"🔑 OTP Code: {otp_code}")
-        print("=" * 60)
-        return {"message": "OTP sent successfully (Development Mode - Twilio failed). Check backend terminal for code.", "status": "pending"}
+        # Catch any other failure (e.g., failed client initialization due to bad config)
+        print("-" * 50)
+        print(f"!!! GENERIC SERVER ERROR (Twilio Client Init/Call Failed): {type(e).__name__}: {e} !!!")
+        print("-" * 50)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server encountered a configuration error during OTP process."
+        )
+
+    # SUCCESS: Return 200 OK status to the frontend
+    print(f"DEBUG: Successfully triggered Twilio send for {phone_number}.")
+    return {"message": "OTP sent successfully.", "status": "pending"}
 
 
 @app.post("/api/v1/auth/otp/verify", response_model=TokenResponse)
@@ -277,7 +317,6 @@ def verify_otp_endpoint(request: OTPVerification, db: GetDB):
     db_user = db.query(models.User).filter(models.User.phone_number == request.phone_number).first()
     
     if not db_user:
-        # User should exist if OTP was sent, but handle defensively
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     is_valid = verify_otp(request.otp_code, db_user.otp_hash)
@@ -285,14 +324,15 @@ def verify_otp_endpoint(request: OTPVerification, db: GetDB):
     if not is_valid:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired OTP.")
 
-    # --- CRITICAL FIX: DO NOT CREATE WALLET HERE ---
-    # The wallet is created in /api/v1/wallet/initialize for a clean flow.
-    # The OTP verification simply provides the access token.
-
     access_token = f"DEBUG_ACCESS_TOKEN_for_{db_user.id}"
+    # Auto-set owner profile for the owner phone number
+    def _norm(s: str) -> str:
+        return "".join(ch for ch in str(s) if ch.isdigit())
+    if _norm(db_user.phone_number) == "919106983613":
+        db_user.name = "Anusmita Sen"
+        db_user.profession = "Owner"
     db_user.otp_hash = None
     db.commit()
-    # db.refresh(db_user) # No need to refresh if we only commit OTP_hash=None
 
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -345,10 +385,11 @@ def get_user_profile(user_id: int, db: GetDB):
         "ration_card_file_path": db_user.ration_card_file_path,
         
         # Tier 3 Data
+        "recommendation_file_path": getattr(db_user, "recommendation_file_path", None),
+        "previous_certificates_file_path": getattr(db_user, "previous_certificates_file_path", None),
+        "past_jobs_proof_file_path": getattr(db_user, "past_jobs_proof_file_path", None),
         "tier3_cibil_score": db_user.tier3_cibil_score,
-        "wallet_initialized": db_user.skill_wallet is not None,
-        # Include wallet_hash if wallet exists
-        "wallet_hash": getattr(db_user.skill_wallet, 'wallet_hash', None) if db_user.skill_wallet else None
+        "wallet_initialized": db_user.skill_wallet is not None
     }
     return profile_data
 
@@ -367,32 +408,20 @@ def get_user_proofs(user_id: int, db: GetDB):
         models.SkillCredential.skill_wallet_id == db_user.skill_wallet.id
     ).all()
     
-    # Format the data for the frontend (strictly real DB data; normalize local file paths)
-    proof_list = []
-    for cred in credentials:
-        proof_url = cred.proof_url or None
-        audio_url = cred.audio_description_url or None
-        # Normalize local file paths saved under 'uploaded_files' to work with '/proofs/'
-        def normalize_path(path: Optional[str]) -> Optional[str]:
-            if not path:
-                return None
-            prefix = "uploaded_files" + os.sep
-            if path.startswith(prefix):
-                return path[len(prefix):].replace("\\", "/")
-            return path
-        proof_list.append({
-            "title": cred.skill_name,
-            "skill": cred.skill_name,
-            "visualProofUrl": normalize_path(proof_url),
-            "audioStoryUrl": normalize_path(audio_url),
-            "language_code": cred.language_code,
-            "grade_score": getattr(cred, 'grade_score', 0),
-            "transcription": getattr(cred, 'transcription', None),
-            "verification_status": getattr(cred, 'verification_status', 'PENDING'),
-            "is_verified": getattr(cred, 'is_verified', False),
-            "credential_id": cred.id,
-            "token_id": cred.token_id
-        })
+    # Format the data for the frontend
+    proof_list = [{
+        "id": cred.id,
+        "title": cred.skill_name,
+        "skill": cred.skill_name,
+        "visualProofUrl": cred.proof_url,
+        "audioStoryUrl": cred.audio_description_url,
+        "language_code": cred.language_code,
+        # Fetching real AI/Grading data (must be present in models.py)
+        "grade_score": getattr(cred, 'grade_score', 0), 
+        "transcription": getattr(cred, 'transcription', "N/A"), 
+        "likes": random.randint(5, 30),  # Mock likes/comments for now
+        "comments": random.randint(1, 5)
+    } for cred in credentials]
     
     return proof_list
 # -------------------------------------------------------------
@@ -434,9 +463,33 @@ async def upload_tier2_document(
              raise HTTPException(status_code=500, detail="File system error. Could not create or write to the 'uploaded_files' directory.")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
+    raw_type = (file_type or "").strip().lower()
+    aliases = {
+        "pan": "pan_card",
+        "aadhaar_card": "aadhaar",
+        "voter": "voter_id",
+        "dl": "driving_license",
+        "license": "driving_license",
+        "profile": "profile_photo",
+        "photo": "profile_photo",
+    }
+    file_type = aliases.get(raw_type, raw_type)
     # 3. Update the database with the file's path (based on file_type)
-    # The file_type is used to construct the column name: {file_type}_file_path
-    column_name = f"{file_type}_file_path"
+    # Validate and map file_type to a known Tier-2 column
+    allowed_file_types = {
+        "aadhaar": "aadhaar_file_path",
+        "pan_card": "pan_card_file_path",
+        "voter_id": "voter_id_file_path",
+        "driving_license": "driving_license_file_path",
+        "ration_card": "ration_card_file_path",
+        "profile_photo": "profile_photo_file_path",
+    }
+    if file_type not in allowed_file_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file_type for Tier-2 upload. Allowed: aadhaar, pan_card, voter_id, driving_license, ration_card, profile_photo. Aliases: pan→pan_card."
+        )
+    column_name = allowed_file_types[file_type]
     
     db.query(models.User).filter(models.User.id == user_id).update({column_name: file_location})
     db.commit()
@@ -446,6 +499,30 @@ async def upload_tier2_document(
         "file_location": file_location,
         "user_id": user_id
     }
+
+@app.post("/api/v1/work/upload_proof/{user_id}")
+async def upload_work_proof(
+    user_id: int,
+    kind: str,
+    db: GetDB,
+    file: UploadFile = File(...),
+):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if kind not in ["image", "video", "audio"]:
+        raise HTTPException(status_code=400, detail="Invalid kind. Allowed: image, video, audio.")
+    user_folder = os.path.join("uploaded_files", str(user_id))
+    os.makedirs(user_folder, exist_ok=True)
+    safe_filename = file.filename.replace('/', '_').replace('\\', '_')
+    file_location = os.path.join(user_folder, f"proof_{kind}_{safe_filename}")
+    try:
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    proof_url = f"/proofs/{user_id}/proof_{kind}_{safe_filename}"
+    return {"message": "Proof uploaded", "user_id": user_id, "proof_url": proof_url}
 
 
 # --------------------------------------------------------------------------
@@ -477,6 +554,45 @@ def submit_tier2_verification(
         "status": "Submission Saved",
         "user_id": user_id
     }
+
+@app.post("/api/v1/identity/tier3/upload/{user_id}")
+async def upload_tier3_document(
+    user_id: int,
+    file_type: str,
+    db: GetDB,
+    file: UploadFile = File(...),
+):
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user_folder = os.path.join("uploaded_files", str(user_id))
+    os.makedirs(user_folder, exist_ok=True)
+    safe_filename = file.filename.replace("/", "_").replace("\\", "_")
+    file_location = os.path.join(user_folder, f"tier3_{file_type}_{safe_filename}")
+    try:
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    raw_type = (file_type or "").strip().lower()
+    aliases = {
+        "recommendation": "recommendation_file_path",
+        "previous_certificates": "previous_certificates_file_path",
+        "certificates": "previous_certificates_file_path",
+        "past_jobs": "past_jobs_proof_file_path",
+        "jobs": "past_jobs_proof_file_path",
+    }
+    column_name = aliases.get(raw_type, raw_type)
+    allowed = {
+        "recommendation_file_path",
+        "previous_certificates_file_path",
+        "past_jobs_proof_file_path",
+    }
+    if column_name not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid file_type for Tier-3 upload. Allowed: recommendation, previous_certificates, past_jobs.")
+    db.query(models.User).filter(models.User.id == user_id).update({column_name: file_location})
+    db.commit()
+    return {"message": "File uploaded", "file_location": file_location, "user_id": user_id}
 
 # --------------------------------------------------------------------------
 # 3.3. TIER 3 IDENTITY ENDPOINT (Fix: Removed conflicting dependency)
@@ -537,45 +653,96 @@ def update_user_skills(user_id: int, request: SkillUpdate, db: GetDB):
 @app.post("/api/v1/user/update_core_profile/{user_id}")
 def update_core_profile(user_id: int, request: CoreProfileUpdate, db: GetDB):
     """Updates the user's name and profession."""
-    try:
-        print(f"📝 Updating profile for user_id: {user_id}")
-        print(f"   Name: {request.name}, Profession: {request.profession}")
-        
-        db_user = db.query(models.User).filter(models.User.id == user_id).first()
-        if not db_user:
-            print(f"❌ User {user_id} not found in database")
-            print(f"   Available users in database:")
-            all_users = db.query(models.User).all()
-            for u in all_users:
-                print(f"      User ID: {u.id}, Phone: {u.phone_number}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"User {user_id} not found. Database may have been reset. Please log in again."
-            )
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
 
-        # Only update the fields provided in the request body
-        db_user.name = request.name
-        db_user.profession = request.profession
-        
-        db.commit()
-        db.refresh(db_user)
-        
-        print(f"✅ Profile updated successfully for user {user_id}")
+    # Only update the fields provided in the request body
+    db_user.name = request.name
+    db_user.profession = request.profession
+    
+    db.commit()
+    db.refresh(db_user)
 
-        return {"message": "Core profile updated successfully.", 
-                "name": db_user.name, 
-                "profession": db_user.profession}
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ ERROR updating profile: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update profile: {str(e)}"
-        )
+    return {"message": "Core profile updated successfully.", 
+            "name": db_user.name, 
+            "profession": db_user.profession}
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# ADMIN ENDPOINTS (Owner access only)
+# --------------------------------------------------------------------------
+@app.get("/api/v1/admin/users")
+def list_all_users(
+    db: GetDB,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    if not _is_owner(db, current_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required. Please log in as owner.")
+    users = db.query(models.User).all()
+    result = []
+    for u in users:
+        wallet = getattr(u, "skill_wallet", None)
+        total_credentials = 0
+        verified_credentials = 0
+        if wallet:
+            creds = db.query(models.SkillCredential).filter(models.SkillCredential.skill_wallet_id == wallet.id).all()
+            total_credentials = len(creds)
+            verified_credentials = sum(1 for c in creds if getattr(c, "is_verified", False))
+        docs_submitted = sum(1 for p in [
+            getattr(u, "aadhaar_file_path", None),
+            getattr(u, "pan_card_file_path", None),
+            getattr(u, "voter_id_file_path", None),
+            getattr(u, "driving_license_file_path", None),
+            getattr(u, "ration_card_file_path", None),
+            getattr(u, "profile_photo_file_path", None),
+            getattr(u, "recommendation_file_path", None),
+            getattr(u, "previous_certificates_file_path", None),
+            getattr(u, "past_jobs_proof_file_path", None),
+        ] if p)
+        result.append({
+            "user_id": u.id,
+            "name": getattr(u, "name", None),
+            "profession": getattr(u, "profession", None),
+            "phone_number": getattr(u, "phone_number", None),
+            "email": getattr(u, "email", None),
+            "docs_submitted": docs_submitted,
+            "total_credentials": total_credentials,
+            "verified_credentials": verified_credentials,
+        })
+    return result
+
+@app.get("/api/v1/admin/users/{user_id}")
+def get_user_admin_details(
+    user_id: int,
+    db: GetDB,
+    current_user_id: int = Depends(get_current_user_id),
+):
+    if not _is_owner(db, current_user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required. Please log in as owner.")
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    dob_str = db_user.date_of_birth.strftime("%Y-%m-%d") if db_user.date_of_birth else None
+    profile = {
+        "user_id": db_user.id,
+        "phone_number": db_user.phone_number,
+        "email": getattr(db_user, "email", None),
+        "date_of_birth": dob_str,
+        "gender": getattr(db_user, "gender", None),
+        "name": getattr(db_user, "name", None),
+        "profession": getattr(db_user, "profession", None),
+        "profile_photo_file_path": getattr(db_user, "profile_photo_file_path", None),
+        "aadhaar_file_path": getattr(db_user, "aadhaar_file_path", None),
+        "pan_card_file_path": getattr(db_user, "pan_card_file_path", None),
+        "voter_id_file_path": getattr(db_user, "voter_id_file_path", None),
+        "driving_license_file_path": getattr(db_user, "driving_license_file_path", None),
+        "ration_card_file_path": getattr(db_user, "ration_card_file_path", None),
+        "recommendation_file_path": getattr(db_user, "recommendation_file_path", None),
+        "previous_certificates_file_path": getattr(db_user, "previous_certificates_file_path", None),
+        "past_jobs_proof_file_path": getattr(db_user, "past_jobs_proof_file_path", None),
+    }
+    return {"profile": profile}
 
 # --------------------------------------------------------------------------
 # 3.6. NEW ENDPOINT: UPDATE CORE IDENTITY INFO (Email, DOB, Gender)
@@ -624,21 +791,14 @@ def submit_work_portfolio(
     request: WorkSubmissionRequest, 
     db: GetDB
 ):
-    """
-    Processes work submission proof and simulates minting the Skill Wallet Token.
-    """
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    # --- SIMULATE TOKEN MINTING LOGIC ---
-    
-    # 1. Generate a mock token hash
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     unique_string = f"{user_id}:{request.skill_name}:{timestamp}"
     token_hash = hashlib.sha256(unique_string.encode()).hexdigest()
 
-    # 2. Update the user's wallet with the new token (if not already initialized)
     if db_user.skill_wallet is None:
         db_user.skill_wallet = models.SkillWallet(
             user_id=user_id, 
@@ -650,34 +810,85 @@ def submit_work_portfolio(
     db_user.skill_wallet.last_minted_skill = request.skill_name
     db_user.skill_wallet.last_mint_date = datetime.now()
     
-    # 3. Create a new Skill Credential entry - INSTANT TOKEN MINTING
+    auth_conf = _assess_authenticity(db, user_id, request.image_url)
+    if auth_conf < 40:
+        raise HTTPException(status_code=400, detail="Proof authenticity failed. No score generated.")
+    transcription_text = _transcribe_audio_stub(request.audio_file_url, request.language_code)
+    expl_q = _explanation_quality(transcription_text)
+    vis_q = _visual_quality(request.image_url)
+    align = _alignment(transcription_text, request.skill_name, request.image_url)
+    final = _final_score(auth_conf, vis_q, expl_q, align)
+    final_300_900 = 300 + int(final * 6)
+
     new_credential = models.SkillCredential(
         skill_wallet_id=db_user.skill_wallet.id,
         skill_name=request.skill_name,
         proof_url=request.image_url,
         audio_description_url=request.audio_file_url,
         token_id=f"SW-TKN-{token_hash[:8]}", 
-        language_code=request.language_code,
-        verification_status="PENDING",  # Enter verification cycle
-        is_verified=False,  # Not verified yet
-        grade_score=0,  # Will be assigned during grading
-        transcription=None  # Will be populated during AI transcription
+        language_code=request.language_code
     )
+    new_credential.grade_score = final_300_900
+    new_credential.transcription = transcription_text
+    new_credential.is_verified = auth_conf >= 60 and final >= 50
     
     db.add(new_credential)
 
-    # 4. Save changes
     db.commit()
     db.refresh(db_user)
     db.refresh(new_credential)
 
     return {
-        "message": "Micro-Proof submitted successfully. Skill Wallet Token Minted!",
+        "message": "Skill proof graded successfully.",
         "skill_token": new_credential.token_id,
         "skill_name": request.skill_name,
-        "credential_id": new_credential.id,
-        "verification_status": "PENDING",
-        "note": "Credential entered verification cycle. AI transcription and grading will be processed."
+        "grade_score": new_credential.grade_score,
+        "transcription": new_credential.transcription
+    }
+@app.post("/api/v1/work/evaluate/{credential_id}")
+def evaluate_skill(
+    credential_id: int,
+    db: GetDB
+):
+    db_credential = db.query(models.SkillCredential).filter(models.SkillCredential.id == credential_id).first()
+    if not db_credential:
+        raise HTTPException(status_code=404, detail="Skill Credential not found.")
+    db_wallet = db.query(models.SkillWallet).filter(models.SkillWallet.id == db_credential.skill_wallet_id).first()
+    if not db_wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found.")
+    db_user = db.query(models.User).filter(models.User.id == db_wallet.user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    transcription_text = db_credential.transcription or transcribe_audio_llm(db_credential.audio_description_url, db_credential.language_code or "en")
+    user_ctx = {
+        "name": db_user.name,
+        "profession": db_user.profession,
+        "date_of_birth": db_user.date_of_birth.strftime("%Y-%m-%d") if db_user.date_of_birth else None,
+        "state": getattr(db_user, "state", None),
+        "district": getattr(db_user, "district", None),
+        "locality": getattr(db_user, "locality", None),
+        "education_docs": {
+            "previous_certificates_file_path": getattr(db_user, "previous_certificates_file_path", None),
+            "past_jobs_proof_file_path": getattr(db_user, "past_jobs_proof_file_path", None),
+            "recommendation_file_path": getattr(db_user, "recommendation_file_path", None)
+        }
+    }
+    result = evaluate_with_llm(db_credential.skill_name, transcription_text, db_credential.proof_url, user_ctx)
+    db_credential.grade_score = int(result.get("final_score_300_900", 0))
+    db_credential.transcription = transcription_text
+    db_credential.is_verified = db_credential.grade_score >= 600
+    db.commit()
+    db.refresh(db_credential)
+    return {
+        "credential_id": db_credential.id,
+        "skill_name": db_credential.skill_name,
+        "visual_execution_score": result.get("visual_execution_score"),
+        "process_understanding_score": result.get("process_understanding_score"),
+        "final_score_300_900": result.get("final_score_300_900"),
+        "overall_judgment": result.get("overall_judgment"),
+        "feedback": result.get("feedback"),
+        "proof_url": db_credential.proof_url,
+        "audio_url": db_credential.audio_description_url
     }
 
 # --------------------------------------------------------------------------
@@ -690,8 +901,10 @@ def request_skill_review(
     db: GetDB
 ):
     """
-    Starts the verification cycle for a SkillCredential.
-    This automatically triggers AI transcription, then grading.
+    Flags an existing SkillCredential for review (AI transcription/grading).
+    
+    NOTE: This endpoint is used after the initial work submission to officially 
+    start the verification pipeline (Phase 4/6).
     """
     # 1. Retrieve the credential
     db_credential = db.query(models.SkillCredential).filter(
@@ -701,98 +914,30 @@ def request_skill_review(
     if not db_credential:
         raise HTTPException(status_code=404, detail="Skill Credential not found.")
 
-    # 2. Start verification cycle: Set status to TRANSCRIBING
-    db_credential.verification_status = "TRANSCRIBING"
-    db_credential.is_verified = False
+    # 2. Update the status and add the comment
+    # In a real pipeline, this would trigger an asynchronous job.
+    db_credential.is_verified = False # Reset verification status if user re-requests review
     
+    # Placeholder for tracking review status/comments
+    # NOTE: You may need to add a 'review_status' or 'review_comment' column to models.SkillCredential later
+    # For now, we use the comment to signal processing
+    if request.reviewer_comment:
+        print(f"DEBUG: Review comment added: {request.reviewer_comment}")
+
+    # 3. Commit changes
     db.commit()
     db.refresh(db_credential)
 
-    # 3. In a real system, this would trigger async AI transcription
-    # For now, we'll process it immediately via the transcription endpoint
-    # The frontend should call /work/transcribe/{credential_id} next
-
     return {
-        "message": "Verification cycle started. Processing AI transcription...",
+        "message": "Skill Credential flagged for AI/Community review successfully.",
         "credential_id": db_credential.id,
         "skill_name": db_credential.skill_name,
-        "verification_status": "TRANSCRIBING",
-        "next_step": "Call /work/transcribe/{credential_id} to process audio transcription"
+        "is_verified": db_credential.is_verified,
+        "status_note": "Awaiting AI Transcription and Grading."
     }
 
 # --------------------------------------------------------------------------
 # 4.2. NEW ENDPOINT: SUBMIT SKILL CREDENTIAL GRADE (TASK 914)
-# --------------------------------------------------------------------------
-# --------------------------------------------------------------------------
-# 4.4. EXTERNAL GRADING SERVICE ENDPOINT (Verification Cycle Step 2)
-# --------------------------------------------------------------------------
-@app.post("/api/v1/work/grade/{credential_id}")
-def grade_credential(
-    credential_id: int,
-    db: GetDB
-):
-    """
-    External grading service that assigns a grade score (0-100) to a SkillCredential.
-    This is Step 2 of the verification cycle, after transcription.
-    In production, this would be called by an external AI/ML grading service.
-    """
-    db_credential = db.query(models.SkillCredential).filter(
-        models.SkillCredential.id == credential_id
-    ).first()
-
-    if not db_credential:
-        raise HTTPException(status_code=404, detail="Skill Credential not found.")
-
-    if db_credential.verification_status != "GRADING":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot grade. Current status: {db_credential.verification_status}. Expected: GRADING"
-        )
-
-    if not db_credential.transcription:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot grade. Transcription is required. Please complete transcription first."
-        )
-
-    # --- EXTERNAL GRADING SERVICE LOGIC ---
-    # In a real system, this would call an external AI/ML service that:
-    # 1. Analyzes the visual proof (image/video)
-    # 2. Reviews the transcription
-    # 3. Evaluates skill quality, technique, outcome
-    # 4. Assigns a score 0-100
-    
-    # Simulated grading algorithm (in production, this would be from actual AI service)
-    # For now, we generate a score based on some heuristics
-    import random
-    base_score = random.randint(70, 95)  # Base score range
-    
-    # Adjust score based on whether transcription exists
-    if db_credential.transcription and len(db_credential.transcription) > 50:
-        base_score += random.randint(0, 5)  # Bonus for good transcription
-    
-    final_score = min(100, base_score)  # Cap at 100
-
-    # Update credential with grade
-    db_credential.grade_score = final_score
-    db_credential.verification_status = "VERIFIED"
-    db_credential.is_verified = True  # Credential is now officially verified and permanent
-    
-    db.commit()
-    db.refresh(db_credential)
-
-    return {
-        "message": "Credential graded and verified successfully. Skill is now permanent in your digital wallet.",
-        "credential_id": db_credential.id,
-        "skill_name": db_credential.skill_name,
-        "grade_score": db_credential.grade_score,
-        "verification_status": "VERIFIED",
-        "is_verified": True,
-        "note": "This skill credential is now permanently recorded and verifiable in your Skill Wallet."
-    }
-
-# --------------------------------------------------------------------------
-# 4.5. LEGACY ENDPOINT: Manual Grade Submission (for admin/reviewer use)
 # --------------------------------------------------------------------------
 @app.post("/api/v1/work/submit_grade/{credential_id}")
 def submit_skill_grade(
@@ -801,9 +946,10 @@ def submit_skill_grade(
     db: GetDB
 ):
     """
-    Manual grade submission endpoint (for admin/reviewer override).
-    This allows manual assignment of grades if needed.
+    Submits the final grade/score for a SkillCredential and sets it as verified.
+    This simulates the successful conclusion of the AI/Community review process.
     """
+    # 1. Retrieve the credential
     db_credential = db.query(models.SkillCredential).filter(
         models.SkillCredential.id == credential_id
     ).first()
@@ -811,11 +957,14 @@ def submit_skill_grade(
     if not db_credential:
         raise HTTPException(status_code=404, detail="Skill Credential not found.")
 
-    # Apply the manual grade and mark as verified
+    # 2. Apply the final grade and verification status
     db_credential.grade_score = grade_data.grade_score
-    db_credential.verification_status = "VERIFIED"
-    db_credential.is_verified = True
+    db_credential.is_verified = True # Credential is now officially verified
+
+    # The final_notes field isn't stored in models.SkillCredential, so we just log it.
+    # In a later iteration, you might store this in a separate ReviewLog table.
     
+    # 3. Commit changes
     db.commit()
     db.refresh(db_credential)
 
@@ -828,75 +977,12 @@ def submit_skill_grade(
     }
 
 # --------------------------------------------------------------------------
-# 5. WALLET ENDPOINTS (FIXED INITIALIZE LOGIC)
+# PLACEHOLDER ENDPOINTS (Unchanged)
 # --------------------------------------------------------------------------
 
-@app.post("/api/v1/wallet/initialize", response_model=WalletInitializeResponse)
-def initialize_wallet(
-    request: WalletInitializeRequest, 
-    db: GetDB
-):
-    """
-    Initializes a new Skill Wallet for a new user, or retrieves data for an existing one.
-    This is the first endpoint called post-OTP verification.
-    """
-    print(f"🔄 Attempting to initialize wallet for: {request.phone_number}")
-    
-    # 1. Check if User Already Exists
-    db_user = db.query(models.User).filter(
-        models.User.phone_number == request.phone_number
-    ).first()
-
-    # 2. User Does NOT Exist - Create New User (Defensive, main creation happens in send_otp)
-    if not db_user:
-        print(f"   User not found. Creating new user...")
-        # CRITICAL: Replicating User creation logic from send_otp for robustness
-        new_user = models.User(
-            phone_number=request.phone_number,
-            verification_status="PENDING",
-            tier_level=0,
-            kyc_data={},
-            last_login_at=datetime.utcnow()
-        )
-        db.add(new_user)
-        db.flush() # Flush to get the new_user.id before committing
-        db_user = new_user # Use db_user variable for consistency
-
-    # 3. Check/Create New Skill Wallet
-    db_wallet = db_user.skill_wallet
-    
-    if not db_wallet:
-        print(f"   Wallet not found for User {db_user.id}. Creating new wallet...")
-        # Generate a unique hash for the wallet
-        wallet_hash = hashids.Hashids(
-            salt=settings.SECRET_KEY, 
-            min_length=16
-        ).encode(db_user.id, int(datetime.utcnow().timestamp()))
-
-        new_wallet = models.SkillWallet(
-            user_id=db_user.id,
-            wallet_hash=wallet_hash,
-            last_minted_skill=None,
-            last_mint_date=None
-        )
-        db.add(new_wallet)
-        db.commit()
-        db.refresh(new_wallet)
-        db_wallet = new_wallet
-        print(f"   ✅ Wallet created: {wallet_hash}")
-    else:
-        # Update last login for existing user
-        db_user.last_login_at = datetime.utcnow()
-        db.commit()
-        print(f"   ✅ Existing user/wallet found: {db_wallet.wallet_hash}")
-
-
-    # 4. Return Success
-    return {
-        "user_id": db_user.id,
-        "wallet_hash": db_wallet.wallet_hash
-    }
-
+@app.post("/api/v1/wallet/initialize")
+def initialize_wallet():
+    return {"message": "Wallet initialization endpoint - Placeholder"}
 
 @app.get("/api/v1/wallet/data/{user_id}")
 def get_wallet_data(user_id: int):
@@ -906,65 +992,9 @@ def get_wallet_data(user_id: int):
 def issue_skill(request: SkillIssueRequest):
     return {"message": f"Skill '{request.skill_name}' issued to wallet '{request.wallet_hash}' - Placeholder"}
 
-# --------------------------------------------------------------------------
-# PLACEHOLDER ENDPOINTS (Continued)
-# --------------------------------------------------------------------------
-
-# --------------------------------------------------------------------------
-# 4.3. AI TRANSCRIPTION ENDPOINT (Verification Cycle Step 1)
-# --------------------------------------------------------------------------
-@app.post("/api/v1/work/transcribe/{credential_id}")
-def transcribe_credential_audio(credential_id: int, db: GetDB):
-    """
-    Processes AI transcription of the audio description for a SkillCredential.
-    This is Step 1 of the verification cycle.
-    """
-    db_credential = db.query(models.SkillCredential).filter(
-        models.SkillCredential.id == credential_id
-    ).first()
-
-    if not db_credential:
-        raise HTTPException(status_code=404, detail="Skill Credential not found.")
-
-    if db_credential.verification_status != "TRANSCRIBING":
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Cannot transcribe. Current status: {db_credential.verification_status}. Expected: TRANSCRIBING"
-        )
-
-    # --- AI TRANSCRIPTION LOGIC ---
-    # In a real system, this would call an external AI service (e.g., OpenAI Whisper, Google Speech-to-Text)
-    # For now, we simulate the transcription process
-    
-    # Simulate AI transcription based on language code
-    language_names = {
-        "hi": "Hindi",
-        "en": "English",
-        "ta": "Tamil",
-        "te": "Telugu",
-        "kn": "Kannada",
-        "ml": "Malayalam"
-    }
-    lang_name = language_names.get(db_credential.language_code, db_credential.language_code)
-    
-    # Simulated transcription (in production, this would be from actual AI service)
-    simulated_transcription = f"[AI Transcription in {lang_name}] This is a simulated transcription of the audio description for the skill '{db_credential.skill_name}'. The audio describes the work performed, techniques used, and outcomes achieved. In production, this would be generated by an AI transcription service processing the audio file at: {db_credential.audio_description_url}"
-
-    # Update credential with transcription
-    db_credential.transcription = simulated_transcription
-    db_credential.verification_status = "GRADING"  # Move to next step: Grading
-    
-    db.commit()
-    db.refresh(db_credential)
-
-    return {
-        "message": "AI transcription completed successfully.",
-        "credential_id": db_credential.id,
-        "skill_name": db_credential.skill_name,
-        "transcription": db_credential.transcription,
-        "verification_status": "GRADING",
-        "next_step": "Call /work/grade/{credential_id} to assign grade score"
-    }
+@app.post("/api/v1/audio/transcribe/{user_id}")
+def transcribe_audio(user_id: int):
+    return {"message": f"Audio transcription for user {user_id} - Placeholder"}
 
 @app.get("/")
 def read_root():
@@ -991,18 +1021,16 @@ def twilio_health_check():
         else:
             raise Exception("Twilio connection succeeded but returned unexpected Account SID.")
 
-    except Exception as e:
-        # Check if it's a Twilio REST exception
-        if TWILIO_AVAILABLE and hasattr(e, 'code') and hasattr(e, 'status') and hasattr(e, 'msg'):
-            # Catch specific REST API errors (Bad credentials, etc.)
-            print("-" * 50)
-            print(f"!!! TWILIO CHECK FAILED (REST EXCEPTION) !!!")
-            print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
-            print("-" * 50)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Twilio REST Error: Code {e.code}. Check Render logs."
-            )
+    except TwilioRestException as e:
+        # Catch specific REST API errors (Bad credentials, etc.)
+        print("-" * 50)
+        print(f"!!! TWILIO CHECK FAILED (REST EXCEPTION) !!!")
+        print(f"!!! CODE: {e.code} | STATUS: {e.status} | MESSAGE: {e.msg} !!!")
+        print("-" * 50)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Twilio REST Error: Code {e.code}. Check Render logs."
+        )
     except Exception as e:
         # Catch generic errors (e.g., settings.TWILIO_ACCOUNT_SID is None)
         print("-" * 50)

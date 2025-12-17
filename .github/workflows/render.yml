@@ -1,0 +1,14 @@
+name: Deploy Backend to Render
+on:
+  push:
+    branches:
+      - main
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: johnbeynon/render-deploy@v1.7.1
+        with:
+          serviceId: ${{ secrets.RENDER_SERVICE_ID_BACKEND }}
+          apiKey: ${{ secrets.RENDER_API_KEY }}

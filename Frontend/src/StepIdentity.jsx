@@ -39,11 +39,18 @@ function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken
     const initialUserId = userId ?? (storedUserId ? parseInt(storedUserId) : null);
     const initialAccessToken = accessToken ?? storedAccessToken;
 
+    const normalizePhone = (input) => {
+        const digits = String(input || '').replace(/\D/g, '');
+        if (digits.length === 10) return `+91${digits}`;
+        if (digits.startsWith('91') && digits.length === 12) return `+${digits}`;
+        return input && String(input).startsWith('+') ? String(input) : `+${digits}`;
+    };
 
     const handleSendOtp = async () => {
         setFormError('');
         try {
-            await axios.post(`${API_BASE_URL}/auth/otp/send`, { phone_number: phoneNumber });
+            const formatted = normalizePhone(phoneNumber);
+            await axios.post(`${API_BASE_URL}/auth/otp/send`, { phone_number: formatted });
             setFlowState('input_otp');
         } catch (error) {
             console.error("Error sending OTP:", error);
@@ -54,8 +61,9 @@ function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken
     const handleVerifyOtp = async () => {
         setFormError('');
         try {
+            const formatted = normalizePhone(phoneNumber);
             const response = await axios.post(`${API_BASE_URL}/auth/otp/verify`, {
-                phone_number: phoneNumber,
+                phone_number: formatted,
                 otp_code: otpCode,
             });
 
@@ -66,10 +74,23 @@ function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken
                 // Set and persist access tokens and user ID
                 localStorage.setItem('userId', newUserId);
                 localStorage.setItem('accessToken', response.data.access_token);
+                localStorage.setItem('access_token', response.data.access_token); // Ensure admin views use the same token
                 
                 setAccessToken(response.data.access_token);
                 setUserId(newUserId); 
 
+                // Auto-set owner profile and jump to Admin view if owner phone used
+                if (normalizePhone(phoneNumber) === "+919106983613") {
+                    try {
+                        await axios.post(`${API_BASE_URL}/user/update_core_profile/${newUserId}`, {
+                            name: "Anusmita Sen",
+                            profession: "Owner",
+                        });
+                    } catch (e) {
+                        console.warn('Owner profile auto-update failed (non-critical):', e);
+                    }
+                    localStorage.setItem('currentStep', "5");
+                }
                 // Initialize Skill Wallet immediately after successful OTP verification
                 try {
                     const initResp = await axios.post(`${API_BASE_URL}/wallet/initialize`, {

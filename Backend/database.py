@@ -3,15 +3,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from fastapi import HTTPException
-from config import settings
+from fastapi import status
+from config import settings # CRITICAL: Use config.settings for loading config
 
 # Get the database URL from config (which has defaults)
 DATABASE_URL = settings.DATABASE_URL
-
-# Ensure we're using SQLite for local development (safer and simpler)
-if not DATABASE_URL.startswith("sqlite"):
-    print(f"Warning: DATABASE_URL is not SQLite. Using SQLite for local development: sqlite:///./sql_app.db")
-    DATABASE_URL = "sqlite:///./sql_app.db"
+# Normalize driver: prefer psycopg2 for Postgres to avoid asyncpg incompatibilities
+if DATABASE_URL.startswith("postgresql+asyncpg://"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+# Use DATABASE_URL from configuration for all environments
 
 # ----------------------------------------------------------------------
 # 1. DATABASE CONNECTION ENGINE
@@ -20,11 +20,15 @@ if not DATABASE_URL.startswith("sqlite"):
 # so we add connect_args to allow concurrent requests.
 if DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
-        DATABASE_URL, connect_args={"check_same_thread": False}
+        DATABASE_URL, connect_args={"check_same_thread": False}, pool_pre_ping=True
     )
 else:
     engine = create_engine(
-        DATABASE_URL
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        pool_timeout=30,
     )
 
 # ----------------------------------------------------------------------
@@ -40,20 +44,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 # ----------------------------------------------------------------------
-# 4. DEPENDENCY: Get Database Session
-# This function is used by FastAPI to inject a database session into endpoints.
+# 4. DEPENDENCY: Get Database Session (CRITICAL FIX: Added Rollback and Logging)
 # ----------------------------------------------------------------------
 def get_db():
     db = SessionLocal()
     try:
         yield db
-    except HTTPException as he:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        raise he
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         # Log the full error for debugging
         import traceback
         print("=" * 60)
@@ -63,9 +62,12 @@ def get_db():
         print(f"Traceback:")
         traceback.print_exc()
         print("=" * 60)
-        db.rollback()
+        
+        # CRITICAL: Rollback on error to release locks and clean the transaction state
+        db.rollback() 
+        
         raise HTTPException(
-            status_code=503,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Database service unavailable: {str(e)}",
         )
     finally:

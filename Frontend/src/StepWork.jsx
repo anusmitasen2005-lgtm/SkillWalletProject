@@ -13,84 +13,93 @@ function StepWork({ userId, nextStep }) {
         previous_certificates_file_path: '',
         past_jobs_proof_file_path: '',
     });
+    const [tier3Files, setTier3Files] = useState({
+        recommendation_file_path: null,
+        previous_certificates_file_path: null,
+        past_jobs_proof_file_path: null,
+    });
     
-    // --- Document Submission Handlers (Handles File Selection for Tier 3) ---
-    const handleFileSelect = (e, fieldName) => {
-        if (e.target.files && e.target.files.length > 0) {
-            const file = e.target.files[0];
-            const simulatedFileName = `${file.name} (${(file.size / 1024).toFixed(1)} KB, ${file.type.split('/')[1] || 'file'})`;
-            
-            setProofs(prev => ({ ...prev, [fieldName]: simulatedFileName }));
-            setMessage(`File selected for ${fieldName.replace(/_/g, ' ')}. Click 'Save & Update Tier 3 Proofs' to confirm.`);
-        }
+    const uploadAliases = {
+        recommendation_file_path: 'recommendation',
+        previous_certificates_file_path: 'previous_certificates',
+        past_jobs_proof_file_path: 'past_jobs',
     };
     
-    // --- Component for a single Proof Input (TIER 3) ---
-    const ProofInput = ({ title, fileKey }) => {
-        const fileInputRef = useRef(null); 
-
-        const triggerFileInput = () => {
-            fileInputRef.current.click();
+    const Tier3DocumentInput = ({ title, docKey, noteLabel }) => {
+        const fileInputRef = useRef(null);
+        
+        const handleSelectFile = (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                const file = e.target.files[0];
+                const simulatedFileName = `${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+                setProofs(prev => ({ ...prev, [docKey]: simulatedFileName }));
+                setTier3Files(prev => ({ ...prev, [docKey]: file }));
+                setMessage(`File selected for ${title}. Click 'Submit ${title} Proof' to save.`);
+            }
         };
-
+        
+        const handleSubmit = async () => {
+            setLoading(true);
+            setMessage('');
+            try {
+                let payload = {};
+                const fileObj = tier3Files[docKey];
+                if (fileObj) {
+                    const form = new FormData();
+                    form.append('file', fileObj);
+                    const resp = await axios.post(`${API_BASE_URL}/identity/tier3/upload/${userId}?file_type=${uploadAliases[docKey]}`, form, {
+                        headers: { 'Content-Type': 'multipart/form-data' }
+                    });
+                    payload[docKey] = resp.data.file_location;
+                }
+                if (docKey === 'community_verifier_id') {
+                    payload['community_verifier_id'] = proofs['community_verifier_id'];
+                }
+                await axios.post(`${API_BASE_URL}/identity/tier3/${userId}`, payload);
+                setMessage(`🟢 ${title} updated successfully.`);
+            } catch (error) {
+                setMessage(`Upload Failed for ${title}: ${error.response?.data?.detail || 'Server error'}`);
+            }
+            setLoading(false);
+        };
+        
         return (
-            <div style={{ marginBottom: '15px', padding: '15px', border: '1px solid #ccc', borderRadius: '5px' }}>
+            <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '5px' }}>
                 <h5 style={{ color: '#ffc107', margin: '0 0 10px 0' }}>{title}</h5>
-                
-                {/* 1. Hidden File Input */}
-                <input
-                    type="file"
-                    ref={fileInputRef}
-                    onChange={(e) => handleFileSelect(e, fileKey)}
-                    style={{ display: 'none' }} // Hide the native browser button
-                />
-
-                {/* 2. Custom Upload Button */}
-                <button
-                    onClick={triggerFileInput}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: '#007bff',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '5px',
-                        cursor: 'pointer',
-                        width: '100%',
-                        marginBottom: '10px'
-                    }}
-                >
-                    {proofs[fileKey] ? `Change File (${proofs[fileKey].split('(')[0].trim()})` : 'Upload File'}
-                </button>
-                
-                {/* 3. Manual Input (for verifier ID, link, etc.) */}
+                {docKey !== 'community_verifier_id' && (
+                    <>
+                        <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={handleSelectFile}
+                            style={{ padding: '10px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
+                        />
+                        {proofs[docKey] && <div style={{ fontSize: '0.85em', color: '#6c757d', marginBottom: '10px' }}>{proofs[docKey].split('(')[0].trim()}</div>}
+                    </>
+                )}
                 <input
                     type="text"
-                    placeholder={`Or enter ${title} link/ID (Optional)`}
-                    value={proofs[fileKey]}
-                    onChange={(e) => setProofs(prev => ({ ...prev, [fileKey]: e.target.value }))}
-                    style={{ padding: '8px', width: '100%', marginTop: '5px', border: '1px solid #ddd' }}
+                    placeholder={noteLabel}
+                    value={docKey === 'community_verifier_id' ? proofs['community_verifier_id'] : ''}
+                    onChange={(e) => {
+                        if (docKey === 'community_verifier_id') {
+                            setProofs(prev => ({ ...prev, community_verifier_id: e.target.value }));
+                        }
+                    }}
+                    style={{ padding: '8px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
                 />
+                <button 
+                    onClick={handleSubmit} 
+                    disabled={loading} 
+                    style={{ padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '14px', width: '100%', marginTop: '5px' }}
+                >
+                    {loading ? 'Submitting...' : `Submit ${title} Proof`}
+                </button>
             </div>
         );
     };
-
-    const submitTier3 = async () => {
-        setLoading(true);
-        setMessage('');
-        try {
-            await axios.post(`${API_BASE_URL}/identity/tier3/${userId}`, proofs);
-            setMessage(`🟢 Tier 3 Professional proofs updated. Proceeding to Portfolio Builder.`);
-            
-            // CRITICAL CHANGE: Move to the next step (Step 4: Portfolio Builder)
-            setTimeout(() => {
-                nextStep(); 
-            }, 1000);
-            
-        } catch (error) {
-            setMessage(`Tier 3 Submission Failed: ${error.response?.data?.detail || 'Server error'}`);
-        }
-        setLoading(false);
-    };
+    
+    const jumpToPortfolio = () => nextStep();
 
     return (
         <div style={{ padding: '20px', backgroundColor: '#fff', minHeight: '400px' }}>
@@ -116,22 +125,16 @@ function StepWork({ userId, nextStep }) {
                 </h4>
                 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                    <ProofInput title="Employer Recommendation" fileKey="recommendation_file_path" />
-                    <ProofInput title="Community Verifier ID/Proof" fileKey="community_verifier_id" />
-                    <ProofInput title="Previous Certificates" fileKey="previous_certificates_file_path" />
-                    <ProofInput title="Proof of Past Jobs" fileKey="past_jobs_proof_file_path" />
+                    <Tier3DocumentInput title="Employer Recommendation" docKey="recommendation_file_path" noteLabel="Enter recommendation link/ID (Optional)" />
+                    <Tier3DocumentInput title="Community Verifier ID/Proof" docKey="community_verifier_id" noteLabel="Enter community verifier ID/link" />
+                    <Tier3DocumentInput title="Previous Certificates" docKey="previous_certificates_file_path" noteLabel="Enter certificates link (Optional)" />
+                    <Tier3DocumentInput title="Proof of Past Jobs" docKey="past_jobs_proof_file_path" noteLabel="Enter past jobs link (Optional)" />
                 </div>
                 
                 <div style={{ textAlign: 'center', marginTop: '30px' }}>
-                    <button onClick={submitTier3} disabled={loading} 
-                            style={{ padding: '15px 35px', backgroundColor: '#28a745', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '16px', marginRight: '10px' }}>
-                        {loading ? 'Submitting Data...' : 'Save & Update Tier 3 Proofs'}
-                    </button>
-                    
-                    {/* NEW: Skip button to proceed to Step 4 (Portfolio) */}
-                    <button onClick={nextStep} 
+                    <button onClick={jumpToPortfolio} 
                             style={{ padding: '15px 35px', backgroundColor: '#6c757d', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '16px' }}>
-                        Skip Tier 3 & Proceed
+                        Proceed to Portfolio
                     </button>
                 </div>
             </div>

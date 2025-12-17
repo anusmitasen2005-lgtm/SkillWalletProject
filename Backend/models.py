@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Date # ADDED Date
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -19,24 +19,17 @@ class User(Base):
     otp_hash = Column(String)
     otp_expiry = Column(DateTime)
     is_verified = Column(Boolean, default=False)
-    
-    # --- CRITICAL FIX: Added Missing Fields for Wallet Initialization ---
-    verification_status = Column(String(50), default="PENDING")
-    tier_level = Column(Integer, default=0)
-    kyc_data = Column(Text, default="{}") # Used for flexible JSON data or default empty string
-    last_login_at = Column(DateTime, default=datetime.utcnow) # ADDED: Required by main.py
-    # -------------------------------------------------------------------
 
     # --- NEW CORE IDENTITY FIELDS ---
-    email = Column(String, unique=True, index=True, nullable=True) 
-    date_of_birth = Column(Date, nullable=True)                  
-    gender = Column(String, nullable=True)                       
+    email = Column(String, unique=True, index=True, nullable=True) # NEW: Added email
+    date_of_birth = Column(Date, nullable=True)                  # NEW: Added Date of Birth (uses Date type)
+    gender = Column(String, nullable=True)                       # NEW: Added Gender
     # --------------------------------
 
     # Core Profile Fields (CRITICAL: Added Name and Profession)
-    name = Column(String, nullable=True)    
-    profession = Column(String, nullable=True) 
-    profile_photo_file_path = Column(String, nullable=True) 
+    name = Column(String, nullable=True)     # NEW
+    profession = Column(String, nullable=True) # NEW
+    profile_photo_file_path = Column(String, nullable=True) # NEW
 
     # --- TIER 1: SKILL TAG ---
     skill_tag = Column(String, default="Builder • Precision")
@@ -121,8 +114,7 @@ class SkillCredential(Base):
     grade_score = Column(Integer, default=0)
     transcription = Column(Text, nullable=True) 
 
-    # Verification Status - Track the verification pipeline
-    verification_status = Column(String, default="PENDING")  # PENDING, TRANSCRIBING, GRADING, VERIFIED
+    # Verification Status
     is_verified = Column(Boolean, default=False) 
 
     issued_date = Column(DateTime, default=datetime.utcnow)

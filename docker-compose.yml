@@ -1,0 +1,44 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: skillwallet
+      POSTGRES_USER: skilluser
+      POSTGRES_PASSWORD: skillpass
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://skilluser:skillpass@db:5432/skillwallet
+      SECRET_KEY: changeme
+      TWILIO_ACCOUNT_SID: ""
+      TWILIO_AUTH_TOKEN: ""
+      TWILIO_SERVICE_SID: ""
+      OPENAI_API_KEY: ""
+      LLM_MODEL: gpt-4o-mini
+    volumes:
+      - proofs_data:/app/Backend/uploaded_files
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Frontend/Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+  proofs_data:

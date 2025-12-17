@@ -168,12 +168,13 @@ function StepFinalSummary({ userId, nextStep }) {
             if (imageFile) {
                 const formData = new FormData();
                 formData.append('file', imageFile);
+                const kind = imageFile.type && imageFile.type.startsWith('video/') ? 'video' : 'image';
                 const uploadResp = await axios.post(
-                    `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=proof`,
+                    `${API_BASE_URL}/work/upload_proof/${userId}?kind=${kind}`,
                     formData,
                     { headers: { 'Content-Type': 'multipart/form-data' } }
                 );
-                finalImageUrl = uploadResp.data.file_location; // e.g., uploaded_files/<user>/<file>
+                finalImageUrl = uploadResp.data.proof_url; // e.g., /proofs/<user>/<file>
             }
             // If audio was recorded (blob: URL), upload it to backend to get a served path
             let finalAudioUrl = audioUrl;
@@ -183,11 +184,11 @@ function StepFinalSummary({ userId, nextStep }) {
                 const audioForm = new FormData();
                 audioForm.append('file', audioFile);
                 const audioUploadResp = await axios.post(
-                    `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=audio_story`,
+                    `${API_BASE_URL}/work/upload_proof/${userId}?kind=audio`,
                     audioForm,
                     { headers: { 'Content-Type': 'multipart/form-data' } }
                 );
-                finalAudioUrl = audioUploadResp.data.file_location;
+                finalAudioUrl = audioUploadResp.data.proof_url;
             }
 
             // Step 1: Submit work and mint token (no grading, no AI summary)

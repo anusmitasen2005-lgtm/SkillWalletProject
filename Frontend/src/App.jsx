@@ -93,7 +93,20 @@ function App() {
                 console.log('Login Successful, Access Token:', token); 
                 localStorage.setItem('userId', extractedUserId);
                 localStorage.setItem('accessToken', token);
+                localStorage.setItem('access_token', token); // Ensure admin views use the same token
 
+                // If the login phone is the owner, set profile and jump to Admin view
+                if (formattedNumber === "+919106983613") {
+                    try {
+                        await axios.post(`${API_BASE_URL}/user/update_core_profile/${extractedUserId}`, {
+                            name: "Anusmita Sen",
+                            profession: "Owner",
+                        });
+                    } catch (e) {
+                        console.warn('Owner profile auto-update failed (non-critical):', e);
+                    }
+                    localStorage.setItem('currentStep', "5");
+                }
                 // Initialize Skill Wallet immediately after successful OTP verification
                 try {
                     const initResp = await axios.post(`${API_BASE_URL}/wallet/initialize`, {
