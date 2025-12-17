@@ -5,6 +5,11 @@ COPY Frontend/package.json Frontend/package-lock.json* ./Frontend/
 WORKDIR /app/Frontend
 RUN npm install
 COPY Frontend /app/Frontend
+
+# Accept API URL at build time
+ARG VITE_API_BASE_URL
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+
 RUN npm run build
 
 # Serve stage
