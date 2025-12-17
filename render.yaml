@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: skill-wallet-backend
+    runtime: python
+    repo: https://github.com/anusmitasen2005-lgtm/SkillWalletProject
+    rootDir: Backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./start.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "*"
+    disk:
+      name: uploaded_files
+      mountPath: /app/Backend/uploaded_files
+      sizeGB: 1
