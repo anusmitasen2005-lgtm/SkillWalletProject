@@ -43,12 +43,36 @@ def transcribe_audio_llm(audio_url: str, language_code: str) -> str:
     except Exception:
         pass
     return resp.text or ""
+from duckduckgo_search import DDGS
+
+def _perform_web_search(query: str, max_results: int = 4) -> str:
+    """
+    Performs a web search using DuckDuckGo to find real-time information.
+    Limited to India region ('in-en').
+    """
+    try:
+        results = DDGS().text(query, region='in-en', max_results=max_results)
+        if not results:
+            return "No specific web search results found."
+        
+        formatted_results = []
+        for i, res in enumerate(results, 1):
+            formatted_results.append(f"{i}. {res.get('title', 'No Title')}: {res.get('body', 'No Description')} (URL: {res.get('href', 'N/A')})")
+        
+        return "\n".join(formatted_results)
+    except Exception as e:
+        print(f"Web search failed: {e}")
+        return "Web search unavailable."
+
 def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_context: Dict[str, Any]) -> Dict[str, Any]:
     path = _local_file_path_from_url(image_url)
     data = _read_bytes(path)
     ext = (os.path.splitext(image_url or "")[1] or "").lower()
     size = len(data) if data else 0
+    
     if not is_openai_configured():
+        # ... (Existing fallback logic remains the same, but let's see if we can at least search for the fallback too?)
+        # For now, keep fallback logic simple as per existing code to avoid breaking it.
         vis_score = 10
         if ext in [".mp4", ".mov", ".webm"]:
             vis_score += 40
@@ -72,6 +96,12 @@ def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_
         weaknesses = []
         if len(t) < 120:
             weaknesses.append("Explanation is brief; add more process detail.")
+        
+        # --- NEW: SEARCH EVEN IN FALLBACK MODE? ---
+        # The user requested "the system searches...". 
+        # Even without LLM, we can append search results to recommendations if we parse them?
+        # Parsing raw HTML/text into JSON without LLM is hard. 
+        # We will stick to static recommendations for fallback to avoid fragility.
         recommendations = [
             {"type": "course", "level": "foundational", "title": "Basics of the trade", "reason": "Strengthen fundamentals and standard workflow."},
             {"type": "workshop", "level": "intermediate", "title": "Hands-on technique refinement", "reason": "Improve finishing and precision."},
@@ -88,6 +118,22 @@ def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_
                 "recommendations": recommendations
             }
         }
+
+    # --- LLM MODE WITH WEB SEARCH ---
+    user_state = user_context.get("state", "India") or "India"
+    user_district = user_context.get("district", "")
+    profession = user_context.get("profession", "")
+    
+    # 1. Construct Search Query
+    # Combine profession and skill for more targeted results
+    if profession and profession.lower() not in skill_name.lower():
+        search_query = f"government schemes training workshops for {profession} {skill_name} in {user_district} {user_state} India"
+    else:
+        search_query = f"government schemes training workshops for {skill_name} in {user_district} {user_state} India"
+    
+    # 2. Perform Search
+    search_results = _perform_web_search(search_query)
+    
     img_b64 = base64.b64encode(data).decode("ascii") if data else ""
     from openai import OpenAI
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -107,7 +153,11 @@ def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_
             f"Explanation:\n{transcription}\n"
             f"User context:\n{user_info}\n"
             f"Visual proof type: {ext}\n"
-            f"File size bytes: {size}\n"
+            f"File size bytes: {size}\n\n"
+            f"--- WEB SEARCH RESULTS (REAL-TIME INFO) ---\n"
+            f"Query: {search_query}\n"
+            f"{search_results}\n"
+            f"-------------------------------------------\n\n"
             "Score channels:\n"
             "- visual_execution_score: 0–100 based on execution quality, completeness, precision, finishing, craftsmanship.\n"
             "- process_understanding_score: 0–100 based on process clarity, step sequencing, tools/materials correctness, technical reasoning.\n"
@@ -115,8 +165,15 @@ def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_
             "- final_score_300_900: integer 300–900 where 900 is highest.\n"
             "Include:\n"
             "- overall_judgment: concise synthesis referencing both channels.\n"
-            "- feedback: provide strengths and weaknesses grounded in explicit observations.\n"
-            "- recommendations: actionable items tailored to profession, language, and region (state/district/locality). Include:\n"
+            "- feedback: object containing:\n"
+            "    - strengths: list of strings,\n"
+            "    - weaknesses: list of strings,\n"
+            "- recommendations: list of objects with keys {type, title, reason}. Use search results to populate this.\n"
+            "  CRITICAL: Use the provided WEB SEARCH RESULTS to recommend ACTUAL, REAL existing courses, workshops, and government schemes.\n"
+            "  Recommendations MUST be specific to the user's PROFESSION ({profession}) and SKILL ({skill_name}).\n"
+            "  AVOID generic recommendations like 'Online Course' or 'Skill Training'. Be specific (e.g., 'Advanced Pipe Fitting Workshop', 'PMKVY Electrician Course').\n"
+            "  If search results provide specific scheme names (e.g., PMKVY, Vishwakarma Yojana) or local institutes, cite them explicitly.\n"
+            "  Include:\n"
             "  • courses (foundational/intermediate/advanced),\n"
             "  • hands-on workshops,\n"
             "  • certifications,\n"
@@ -133,4 +190,5 @@ def evaluate_with_llm(skill_name: str, transcription: str, image_url: str, user_
         response_format={"type": "json_object"},
         temperature=0
     )
-    return completion.choices[0].message.parsed
+    import json
+    return json.loads(completion.choices[0].message.content)

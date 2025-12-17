@@ -25,7 +25,7 @@ const buttonStyle = {
 };
 
 
-function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken }) {
+function StepIdentity({ nextStep, jumpToStep, setUserId, setAccessToken, userId, accessToken }) {
     const [phoneNumber, setPhoneNumber] = useState('');
     const [otpCode, setOtpCode] = useState('');
     const storedUserId = typeof window !== 'undefined' ? localStorage.getItem('userId') : null;
@@ -90,6 +90,10 @@ function StepIdentity({ nextStep, setUserId, setAccessToken, userId, accessToken
                         console.warn('Owner profile auto-update failed (non-critical):', e);
                     }
                     localStorage.setItem('currentStep', "5");
+                    if (jumpToStep) {
+                        jumpToStep(5);
+                        return; // Stop here, don't show profile setup
+                    }
                 }
                 // Initialize Skill Wallet immediately after successful OTP verification
                 try {

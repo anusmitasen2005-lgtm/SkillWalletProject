@@ -37,6 +37,7 @@ function ProfileFlow() {
             case 1:
                 return <StepIdentity 
                             nextStep={nextStep} 
+                            jumpToStep={jumpToStep} // Pass jumpToStep for Owner redirect
                             setUserId={setUserId}
                             setAccessToken={setAccessToken}
                             userId={userId ? parseInt(userId) : null}

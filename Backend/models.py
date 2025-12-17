@@ -113,6 +113,7 @@ class SkillCredential(Base):
     # AI and Grading Fields 
     grade_score = Column(Integer, default=0)
     transcription = Column(Text, nullable=True) 
+    feedback = Column(Text, nullable=True) # JSON String of strengths, weaknesses, recommendations
 
     # Verification Status
     is_verified = Column(Boolean, default=False) 

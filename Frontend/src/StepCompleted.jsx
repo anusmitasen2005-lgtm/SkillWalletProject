@@ -37,8 +37,11 @@ const generateResumeHtml = (profile, microProofs) => {
         const link = toProofUrl(item.visualProofUrl);
         return `
         <div style="margin-bottom: 15px; border: 1px solid #eee; padding: 10px; border-radius: 4px;">
-            <h4 style="color: #28a745; margin: 0;">${item.title} (${item.skill})</h4>
-            <p style="margin: 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h4 style="color: #28a745; margin: 0;">${item.title} (${item.skill})</h4>
+                <span style="font-size: 0.8em; color: #666;">${item.issued_date || 'Date: N/A'}</span>
+            </div>
+            <p style="margin: 5px 0 0 0;">
                 <strong>Proof (Visual):</strong> ${link ? `<a href="${link}" target="_blank">${item.visualProofUrl}</a>` : 'N/A'}<br/>
                 <strong>Audio Transcript:</strong> ${item.transcription ? item.transcription.substring(0, 150) + '...' : 'N/A'}
             </p>
@@ -83,7 +86,7 @@ const generateResumeHtml = (profile, microProofs) => {
 
 
 // Component for a single Portfolio Item - DISPLAYS REAL DATA
-const PortfolioItem = ({ item }) => {
+const PortfolioItem = ({ item, profession }) => {
     // Function to open the proof URL in a new window/tab
     const handleViewVisualProof = () => {
         if (item.visualProofUrl && item.visualProofUrl !== 'N/A') {
@@ -165,6 +168,42 @@ const PortfolioItem = ({ item }) => {
                     View Proof (Audio Story)
                 </button>
             </div>
+            
+            {/* Recommendations Section */}
+            {item.feedback?.recommendations?.length > 0 && (
+                <div style={{ marginTop: '15px', borderTop: '1px solid #eee', paddingTop: '10px' }}>
+                    <h6 style={{ color: '#0056b3', margin: '0 0 10px 0' }}>🚀 Opportunities For You</h6>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {item.feedback.recommendations.map((rec, idx) => (
+                            <button 
+                                key={idx}
+                                onClick={() => {
+                                    // Use profession in the query if available, otherwise fallback to generic
+                                    const searchContext = profession ? `${profession} ${rec.title}` : rec.title;
+                                    const query = encodeURIComponent(`${searchContext} ${rec.type} India apply online`);
+                                    window.open(`https://www.google.com/search?q=${query}`, '_blank');
+                                }}
+                                style={{
+                                    padding: '8px 12px',
+                                    backgroundColor: '#fff',
+                                    border: '1px solid #007bff',
+                                    borderRadius: '4px',
+                                    color: '#007bff',
+                                    cursor: 'pointer',
+                                    textAlign: 'left',
+                                    fontSize: '0.9em',
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center'
+                                }}
+                            >
+                                <span>{rec.title} <span style={{fontSize: '0.8em', color: '#666'}}>({rec.type})</span></span>
+                                <span>↗️</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
             
             {item.grade_score > 0 && (
                 <div style={{ marginTop: '10px', borderTop: '1px dotted #eee', paddingTop: '5px' }}>
@@ -616,7 +655,11 @@ function StepCompleted({ jumpToStep, userId }) {
                     {/* Portfolio Items List - NOW RENDERING REAL DATA */}
                     {microProofs.length > 0 ? (
                         microProofs.map((item, index) => (
-                            <PortfolioItem key={index} item={item} />
+                            <PortfolioItem 
+                                key={index} 
+                                item={item} 
+                                profession={profile.profession} 
+                            />
                         ))
                     ) : (
                         <div style={{ textAlign: 'center', padding: '30px', border: '1px dashed #ccc' }}>

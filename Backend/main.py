@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 import uvicorn
 import hashlib
 import random
+import json
 from datetime import datetime
 from typing import Annotated, Optional, List 
 import os 
@@ -189,6 +190,10 @@ def _safe_filesize(path: str) -> int:
 def _local_file_path_from_url(url: str) -> Optional[str]:
     if not url:
         return None
+    # Handle multiple files (take the first one for size checks)
+    if "|" in url:
+        url = url.split("|")[0]
+        
     if url.startswith("/proofs/"):
         return os.path.join("uploaded_files", url.split("/proofs/")[-1])
     if url.startswith("http://127.0.0.1:8000/proofs/") or url.startswith("http://localhost:8000/proofs/"):
@@ -229,9 +234,14 @@ def _explanation_quality(transcription: str) -> int:
     return max(0, min(100, score))
 
 def _visual_quality(proof_url: str) -> int:
-    local_path = _local_file_path_from_url(proof_url)
+    # Handle multiple files
+    urls = proof_url.split("|") if proof_url else []
+    if not urls: return 0
+    target_url = urls[0] # Base quality on the first/primary view
+
+    local_path = _local_file_path_from_url(target_url)
     size = _safe_filesize(local_path) if local_path else 0
-    ext = (os.path.splitext(proof_url or "")[1] or "").lower()
+    ext = (os.path.splitext(target_url or "")[1] or "").lower()
     score = 10
     if ext in [".mp4", ".mov", ".webm"]:
         score += 25
@@ -241,6 +251,11 @@ def _visual_quality(proof_url: str) -> int:
         score += 25
     if size > 2_000_000:
         score += 25
+    
+    # Bonus for multiple views
+    if len(urls) > 1:
+        score += 15
+        
     return max(0, min(100, score))
 
 def _alignment(transcription: str, skill_name: str, proof_url: str) -> float:
@@ -418,19 +433,30 @@ def get_user_proofs(user_id: int, db: GetDB):
     ).all()
     
     # Format the data for the frontend
-    proof_list = [{
-        "id": cred.id,
-        "title": cred.skill_name,
-        "skill": cred.skill_name,
-        "visualProofUrl": cred.proof_url,
-        "audioStoryUrl": cred.audio_description_url,
-        "language_code": cred.language_code,
-        # Fetching real AI/Grading data (must be present in models.py)
-        "grade_score": getattr(cred, 'grade_score', 0), 
-        "transcription": getattr(cred, 'transcription', "N/A"), 
-        "likes": random.randint(5, 30),  # Mock likes/comments for now
-        "comments": random.randint(1, 5)
-    } for cred in credentials]
+    proof_list = []
+    for cred in credentials:
+        feedback_data = None
+        if getattr(cred, 'feedback', None):
+            try:
+                feedback_data = json.loads(cred.feedback)
+            except:
+                feedback_data = None
+        
+        proof_list.append({
+            "id": cred.id,
+            "title": cred.skill_name,
+            "skill": cred.skill_name,
+            "visualProofUrl": cred.proof_url,
+            "audioStoryUrl": cred.audio_description_url,
+            "language_code": cred.language_code,
+            # Fetching real AI/Grading data (must be present in models.py)
+            "grade_score": getattr(cred, 'grade_score', 0), 
+            "transcription": getattr(cred, 'transcription', "N/A"),
+            "feedback": feedback_data,
+            "issued_date": cred.issued_date.strftime("%Y-%m-%d") if cred.issued_date else "N/A",
+            "likes": random.randint(5, 30),  # Mock likes/comments for now
+            "comments": random.randint(1, 5)
+        })
     
     return proof_list
 # -------------------------------------------------------------
@@ -849,6 +875,7 @@ def submit_work_portfolio(
 
     return {
         "message": "Skill proof graded successfully.",
+        "credential_id": new_credential.id,
         "skill_token": new_credential.token_id,
         "skill_name": request.skill_name,
         "grade_score": new_credential.grade_score,
@@ -886,6 +913,12 @@ def evaluate_skill(
     db_credential.grade_score = int(result.get("final_score_300_900", 0))
     db_credential.transcription = transcription_text
     db_credential.is_verified = db_credential.grade_score >= 600
+    
+    # Save feedback (recommendations) to DB
+    feedback_content = result.get("feedback", {})
+    if feedback_content:
+        db_credential.feedback = json.dumps(feedback_content)
+        
     db.commit()
     db.refresh(db_credential)
     return {
@@ -895,7 +928,7 @@ def evaluate_skill(
         "process_understanding_score": result.get("process_understanding_score"),
         "final_score_300_900": result.get("final_score_300_900"),
         "overall_judgment": result.get("overall_judgment"),
-        "feedback": result.get("feedback"),
+        "feedback": feedback_content,
         "proof_url": db_credential.proof_url,
         "audio_url": db_credential.audio_description_url
     }
