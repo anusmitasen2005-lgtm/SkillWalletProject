@@ -1,0 +1,20 @@
+services:
+  # Backend Service (Python/FastAPI)
+  - type: web
+    name: skill-wallet-backend
+    runtime: python
+    repo: https://github.com/anusmitasen2005-lgtm/SkillWalletProject
+    rootDir: Backend
+    # Build Command: Install dependencies
+    buildCommand: pip install -r requirements.txt
+    # Start Command: Initialize DB and run Server
+    startCommand: python db_init.py && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.0
+      - key: DATABASE_URL
+        value: sqlite:///./skillwallet.db
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: "*"
