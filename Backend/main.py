@@ -33,6 +33,15 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
+# --- NEW: Root Handler to avoid 404 on base URL ---
+@app.get("/")
+def read_root():
+    return {
+        "message": "Skill Wallet Backend is Live!",
+        "docs_url": "/docs",
+        "redoc_url": "/redoc"
+    }
+
 # --------------------------------------------------------------------------
 # CORS CONFIGURATION (Unchanged)
 # --------------------------------------------------------------------------
