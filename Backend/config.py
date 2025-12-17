@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     # 2. Security Settings
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174"
+    CORS_ORIGINS: str = "*" # Allow all origins for development/preview flexibility
 
     # 3. OTP/Twilio Settings (CRITICAL FIX: Allow empty string if not found, preventing crashes)
     TWILIO_ACCOUNT_SID: str = Field(default="")
