@@ -12,7 +12,7 @@ services:
       - key: PORT
         value: 10000
       - key: DATABASE_URL
-        sync: false
+        value: sqlite:////app/Backend/uploaded_files/skillwallet.db
       - key: SECRET_KEY
         generateValue: true
       - key: CORS_ORIGINS
