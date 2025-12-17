@@ -5,7 +5,7 @@ services:
     repo: https://github.com/anusmitasen2005-lgtm/SkillWalletProject
     rootDir: Backend
     buildCommand: pip install -r requirements.txt
-    startCommand: ./start.sh
+    startCommand: python db_init.py && uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.0
