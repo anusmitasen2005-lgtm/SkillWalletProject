@@ -1,0 +1,13 @@
+node_modules/
+__pycache__/
+*.pyc
+.env
+*.db
+.DS_Store
+dist/
+build/
+coverage/
+.vscode/
+Backend/uploads/
+Backend/uploaded_files/
+uploads/

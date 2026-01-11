@@ -1,297 +1,225 @@
-import React, { useState, useEffect } from 'react';
+
+import React, { useState, useRef } from 'react';
 import axios from 'axios';
+import { VoiceHeader, ActionButton, VoiceControl } from './components/VoiceUI';
+import { Camera, FileText, CheckCircle, X, Upload } from 'lucide-react';
 
-const API_BASE_URL = 'http://localhost:8000/api/v1';
+const API_BASE_URL = 'http://127.0.0.1:8000/api/v1';
 
-// --- NEW: Reusable Component for Select OR Text Input ---
-// FIX: MOVED COMPONENT DEFINITION TO TOP LEVEL (OUTSIDE OF StepTiers FUNCTION)
-const FlexibleDomainInput = ({ id, label, options, currentValue, onChange, onCustomChange }) => {
-    // Check if the current value is NOT one of the predefined options
-    const isCustom = !options.includes(currentValue);
+function StepTiers({ userId, nextStep }) {
+    const [loading, setLoading] = useState(false);
+    const [message, setMessage] = useState('');
+    const [cameraOpen, setCameraOpen] = useState(false);
+    const [activeDocType, setActiveDocType] = useState(null);
+    const videoRef = useRef(null);
+    const canvasRef = useRef(null);
     
-    // Internal state to track if the user has explicitly selected the "Type in your own" option
-    const [selectValue, setSelectValue] = useState(isCustom ? 'custom' : currentValue);
+    // Docs state
+    const [docs, setDocs] = useState({
+        aadhaar: null,
+        pan: null,
+        training_letter: null,
+        apprenticeship: null,
+        local_authority: null
+    });
 
-    const handleSelectChange = (e) => {
-        const newValue = e.target.value;
-        setSelectValue(newValue);
-
-        if (newValue === 'custom') {
-            onCustomChange(''); // Clear current value to signal custom mode
-        } else {
-            onChange(newValue); // Set predefined value
+    // --- VOICE HELPERS ---
+    const speak = (text) => {
+        if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(text);
+            window.speechSynthesis.speak(utterance);
         }
     };
 
-    return (
-        <div style={{ marginBottom: '15px' }}>
-            <label style={{ display: 'block', fontWeight: 'bold', marginBottom: '5px' }}>{label}:</label>
-            
-            {/* 1. Dropdown Selection */}
-            <select 
-                value={selectValue}
-                onChange={handleSelectChange}
-                style={{ padding: '8px', width: '100%', marginBottom: '5px', border: '1px solid #ddd' }}
-            >
-                {options.map(option => (
-                    <option key={option} value={option}>{option}</option>
-                ))}
-                <option value="custom">-- Type in your own --</option>
-            </select>
+    // --- CAMERA LOGIC ---
+    const startCamera = async (docType) => {
+        setActiveDocType(docType);
+        setCameraOpen(true);
+        speak("Keep the paper inside the box.");
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+            }
+        } catch (err) {
+            console.error("Camera error:", err);
+            alert("Could not access camera.");
+            setCameraOpen(false);
+        }
+    };
 
-            {/* 2. Custom Text Input (Shown if 'custom' is selected) */}
-            {selectValue === 'custom' && (
-                <input
-                    type="text"
-                    placeholder="e.g., Painter, Welder, Chef"
-                    value={currentValue} // Use the actual current value from the parent state
-                    onChange={(e) => onCustomChange(e.target.value)}
-                    style={{ padding: '8px', width: '100%', border: '1px solid #ddd' }}
+    const stopCamera = () => {
+        if (videoRef.current && videoRef.current.srcObject) {
+            videoRef.current.srcObject.getTracks().forEach(track => track.stop());
+        }
+        setCameraOpen(false);
+        setActiveDocType(null);
+    };
+
+    const captureImage = () => {
+        if (videoRef.current && canvasRef.current) {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            
+            canvas.toBlob(blob => {
+                const file = new File([blob], `${activeDocType}_${Date.now()}.jpg`, { type: 'image/jpeg' });
+                handleFileChange(file, activeDocType);
+                stopCamera();
+            }, 'image/jpeg', 0.8);
+        }
+    };
+
+    const handleFileChange = async (file, docType) => {
+        if (file) {
+            setDocs(prev => ({ ...prev, [docType]: file }));
+            await uploadDoc(docType, file);
+        }
+    };
+
+    const uploadDoc = async (docType, file) => {
+        setLoading(true);
+        setMessage(`Uploading ${docType}...`);
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            
+            const backendFileTypeMap = {
+                aadhaar: 'aadhaar',
+                pan: 'pan_card',
+                training_letter: 'training_letter',
+                apprenticeship: 'apprenticeship_proof',
+                local_authority: 'local_authority_proof'
+            };
+
+            await axios.post(
+                `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=${backendFileTypeMap[docType]}`, 
+                formData,
+                { headers: { 'Content-Type': 'multipart/form-data' } }
+            );
+            setMessage(`✅ ${docType.replace('_', ' ')} uploaded!`);
+            speak(`${docType.replace('_', ' ')} saved.`);
+        } catch (err) {
+            console.error(err);
+            setMessage(`❌ Failed to upload ${docType}.`);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // --- COMPONENT: DOC CARD ---
+    const DocCard = ({ label, type, colorClass, icon }) => (
+        <div className={`p-4 rounded-2xl border-2 ${colorClass} relative overflow-hidden transition-all active:scale-95 shadow-sm mb-4`}>
+            <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                    <span className="text-3xl p-2 bg-white rounded-full shadow-sm">{icon}</span>
+                    <div>
+                        <h4 className="font-bold text-gray-800">{label}</h4>
+                        {docs[type] && <span className="text-xs text-green-600 font-bold flex items-center gap-1"><CheckCircle size={12}/> Uploaded</span>}
+                    </div>
+                </div>
+                {/* Voice Controls (Mic for explanation - mocked for now) */}
+                <VoiceControl 
+                    onSpeak={() => speak(`This is for ${label}. You can take a photo or upload a file.`)}
+                    onListen={() => speak("Listening...")} 
+                    listening={false}
                 />
-            )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+                <button 
+                    onClick={() => startCamera(type)}
+                    className="bg-white py-3 rounded-xl border-2 border-dashed border-gray-300 flex flex-col items-center justify-center gap-1 font-bold text-gray-600 hover:border-amber-400 hover:text-amber-500 transition-colors"
+                >
+                    <Camera size={20} />
+                    <span className="text-sm">{docs[type] ? "Retake" : "Camera"}</span>
+                </button>
+
+                <div className="relative">
+                    <input 
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                        onChange={(e) => handleFileChange(e.target.files[0], type)}
+                    />
+                    <button 
+                        className="w-full h-full bg-white py-3 rounded-xl border-2 border-dashed border-gray-300 flex flex-col items-center justify-center gap-1 font-bold text-gray-600 hover:border-blue-400 hover:text-blue-500 transition-colors"
+                    >
+                        <Upload size={20} />
+                        <span className="text-sm">Upload File</span>
+                    </button>
+                </div>
+            </div>
         </div>
     );
-};
-// END of FlexibleDomainInput component
-
-function StepTiers({ userId, accessToken, nextStep }) {
-    const [profile, setProfile] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [message, setMessage] = useState('');
-    
-    // State for documents (number input and the actual File object)
-    const [docs, setDocs] = useState({
-        aadhaar_number: '', pan_card_number: '',
-        voter_id_number: '', driving_license_number: '',
-        ration_card_number: '',
-        // Initialize domain/skill state (RESTORED)
-        primary_domain_identity: 'Construction',
-        differentiating_power_skill: 'Teaching/Mentoring',
-    });
-
-    // State for actual file objects to be uploaded
-    const [filesToUpload, setFilesToUpload] = useState({
-        aadhaar: null, pan: null, voter: null, driving_license: null, ration_card: null
-    });
-    
-    useEffect(() => {
-        fetchProfileData();
-    }, [userId]);
-
-    const fetchProfileData = async () => {
-        try {
-            const response = await axios.get(`${API_BASE_URL}/user/profile/${userId}`);
-            setProfile(response.data);
-            setLoading(false);
-            
-            // Populate the form fields with existing data
-            setDocs(prev => ({ 
-                ...prev,
-                primary_domain_identity: response.data.skill_tag || 'Construction', 
-                // Restore power skill state if available
-                differentiating_power_skill: response.data.power_skill_tag || 'Teaching/Mentoring',
-            }));
-            
-        } catch (error) {
-            setMessage('Error fetching identity status. (Ensure Backend is running)');
-            setLoading(false);
-        }
-    };
-    
-    // --- Document Submission Handlers (File Upload & Text Update) ---
-    const handleFileUploadAndSave = async (docType) => {
-        const file = filesToUpload[docType];
-        
-        if (docs[`${docType}_number`] || file) {
-            setLoading(true);
-            setMessage('');
-
-            try {
-                // 1. Send the file first, if present
-                if (file) {
-                    const formData = new FormData();
-                    formData.append("file", file);
-                    
-                    const uploadResponse = await axios.post(
-                        `${API_BASE_URL}/identity/tier2/upload/${userId}?file_type=${docType}`, 
-                        formData, 
-                        { headers: { 'Content-Type': 'multipart/form-data' } }
-                    );
-                    setMessage(`File upload for ${docType} successful!`);
-                    
-                    // 2. Update the number and file path text fields
-                    await axios.post(`${API_BASE_URL}/identity/tier2/${userId}`, {
-                        [`${docType}_number`]: docs[`${docType}_number`],
-                        [`${docType}_file_path`]: uploadResponse.data.file_location
-                    });
-                }
-                
-                // If only the number was entered, just update the text fields
-                else if (docs[`${docType}_number`]) {
-                     await axios.post(`${API_BASE_URL}/identity/tier2/${userId}`, {
-                        [`${docType}_number`]: docs[`${docType}_number`],
-                     });
-                }
-                
-                setMessage(`🟢 ${docType.toUpperCase()} proofs updated. Upload more documents to increase your score!`);
-                fetchProfileData();
-                
-            } catch (error) {
-                setMessage(`Upload Failed for ${docType}: ${error.response?.data?.detail || 'Server error'}`);
-            }
-            setLoading(false);
-        } else {
-            setMessage(`Please enter a number or select a file for ${docType}.`);
-        }
-    };
-
-    // --- Handle saving Domain Identity and Power Skill (RESTORED LOGIC) ---
-    const updateDomainAndSkill = async () => {
-        setLoading(true);
-        setMessage('');
-        try {
-            // Save the current domain and power skill selections
-            await axios.post(`${API_BASE_URL}/user/update_skill_tag/${userId}`, {
-                skill_tag: docs.primary_domain_identity,
-                power_skill_tag: docs.differentiating_power_skill
-            });
-            
-            setMessage(`✅ Identity and Proofs saved!`);
-            fetchProfileData();
-
-        } catch (error) {
-            setMessage(`Submission Failed: ${error.response?.data?.detail || 'Server error'}`);
-        }
-        setLoading(false);
-    };
-
-
-    const DocumentInput = ({ title, docType, isVerified }) => {
-        return (
-            <div style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ccc', borderRadius: '5px' }}>
-                <h5 style={{ color: isVerified ? '#28a745' : '#007bff', margin: '0 0 10px 0' }}>
-                    {title} {isVerified ? '✅' : ''}
-                </h5>
-                <input
-                    type="text"
-                    placeholder={`${title} Number (Optional)`}
-                    value={docs[`${docType}_number`]}
-                    onChange={(e) => setDocs(prev => ({ ...prev, [`${docType}_number`]: e.target.value }))}
-                    style={{ padding: '8px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
-                />
-                <input
-                    type="file"
-                    onChange={(e) => setFilesToUpload(prev => ({ ...prev, [docType]: e.target.files[0] }))}
-                    style={{ padding: '10px', width: '100%', marginBottom: '10px', border: '1px solid #ddd' }}
-                />
-                 <button onClick={() => handleFileUploadAndSave(docType)} disabled={loading} 
-                        style={{ padding: '8px 15px', backgroundColor: '#007bff', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '14px', width: '100%', marginTop: '5px' }}>
-                    {loading ? 'Submitting...' : `Submit ${title} Proof`}
-                </button>
-            </div>
-        );
-    };
-
-    if (loading) return <div style={{ textAlign: 'center' }}>Loading Verification Core...</div>;
-    if (!profile) return <div style={{ textAlign: 'center', color: 'red' }}>Could not load user profile.</div>;
-    
-    // Check if at least one document file path was submitted
-    const isTier2Verified = profile.aadhaar_file_path || profile.pan_card_file_path || profile.voter_id_file_path || profile.driving_license_file_path || profile.ration_card_file_path;
 
     return (
-        <div style={{ padding: '20px', backgroundColor: '#fff', minHeight: '400px' }}>
-            <h2 style={{ color: '#007bff', textAlign: 'center' }}>🔒 Step 2: Core Identity & Domain Definition</h2>
-            <p style={{ textAlign: 'center', color: '#555' }}>
-                Define your primary identity and differentiating skill. **(Your current skill tag is: {profile.skill_tag || 'N/A'})**
-            </p>
-            {message && <p style={{ color: 'green', fontWeight: 'bold', textAlign: 'center' }}>{message}</p>}
-
-            {/* ------------------------------------------------------------- */}
-            {/* DOMAIN AND POWER SKILL SELECTION (RESTORED) */}
-            {/* ------------------------------------------------------------- */}
-            <div style={{ 
-                boxShadow: '0 4px 15px rgba(0,0,0,0.1)', 
-                padding: '25px', 
-                margin: '20px 0', 
-                borderRadius: '10px', 
-                borderLeft: `5px solid #28a745` 
-            }}>
-                <h4 style={{ color: '#28a745', paddingBottom: '10px' }}>
-                    Skill Identity Definition (Editable)
-                </h4>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                    <FlexibleDomainInput
-                        id="primary_domain"
-                        label="Primary Domain Identity (Trade/Profession)"
-                        options={['Construction', 'Apparel', 'Automotive Repair', 'Food Service', 'Textile Arts', 'Carpenter', 'Painter', 'Welder']}
-                        currentValue={docs.primary_domain_identity}
-                        onChange={(val) => setDocs(prev => ({ ...prev, primary_domain_identity: val }))}
-                        onCustomChange={(val) => setDocs(prev => ({ ...prev, primary_domain_identity: val }))}
-                    />
-
-                    <FlexibleDomainInput
-                        id="power_skill"
-                        label="Differentiating Power Skill (Soft Skill)"
-                        options={['Teaching/Mentoring', 'Finance/Accounting', 'Quality Control', 'Customer Service', 'Problem Solving', 'Leadership', 'Negotiation', 'Digital Literacy']}
-                        currentValue={docs.differentiating_power_skill}
-                        onChange={(val) => setDocs(prev => ({ ...prev, differentiating_power_skill: val }))}
-                        onCustomChange={(val) => setDocs(prev => ({ ...prev, differentiating_power_skill: val }))}
-                    />
+        <div className="p-6 relative min-h-screen pb-24">
+            <VoiceHeader title="Trusted Identity" step="2 of 3" subtitle="Identity Proofs" />
+            
+            <div className="space-y-8">
+                {/* TIER 2 SECTION (Green) */}
+                <div>
+                    <h3 className="font-bold text-gray-500 mb-4 uppercase tracking-wider text-xs ml-1">Tier 2: Government ID (Green)</h3>
+                    <DocCard label="Aadhaar Card" type="aadhaar" colorClass="bg-green-50 border-green-100" icon="🆔" />
+                    <DocCard label="PAN Card" type="pan" colorClass="bg-green-50 border-green-100" icon="💳" />
                 </div>
-                
-                {/* NOTE: We removed the separate Save button here and rely on the combined button below. */}
-            </div>
 
-            {/* ------------------------------------------------------------- */}
-            {/* GOVERNMENT DOCUMENT PROOFS (File upload section) */}
-            {/* ------------------------------------------------------------- */}
-            <div style={{ 
-                boxShadow: '0 4px 15px rgba(0,0,0,0.1)', 
-                padding: '25px', 
-                margin: '30px 0', 
-                borderRadius: '10px', 
-                borderLeft: `5px solid ${isTier2Verified ? '#007bff' : '#ccc'}` 
-            }}>
-                <h4 style={{ color: '#007bff', paddingBottom: '10px' }}>
-                    Government-Linked Proofs (Optional)
-                </h4>
-                
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                    <DocumentInput title="Aadhaar Card" docType="aadhaar" isVerified={!!profile.aadhaar_file_path} />
-                    <DocumentInput title="PAN Card" docType="pan" isVerified={!!profile.pan_card_file_path} />
-                    <DocumentInput title="Voter ID" docType="voter" isVerified={!!profile.voter_id_file_path} />
-                    <DocumentInput title="Driving License" docType="driving_license" isVerified={!!profile.driving_license_file_path} />
-                    <DocumentInput title="Ration Card" docType="ration_card" isVerified={!!profile.ration_card_file_path} />
-                </div>
-                
-                {/* COMBINED SUBMISSION/NAVIGATION BUTTONS - CORRECT PLACEMENT */}
-                <div style={{ textAlign: 'center', marginTop: '30px' }}>
-                    {/* 1. The Main Save/Update Button */}
-                    <button onClick={updateDomainAndSkill} disabled={loading} 
-                            style={{ padding: '15px 35px', backgroundColor: '#28a745', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '16px', marginRight: '10px' }}>
-                        {loading ? 'Submitting Data...' : 'Save & Update Tier 2 Proofs'}
-                    </button>
-
-                    {/* 2. The Skip Button */}
-                    <button onClick={nextStep} 
-                            style={{ padding: '15px 35px', backgroundColor: '#6c757d', color: 'white', border: 'none', cursor: 'pointer', borderRadius: '5px', fontSize: '16px' }}>
-                        Skip Tier 2 & Proceed
-                    </button>
+                {/* TIER 3 SECTION (Grey) */}
+                <div>
+                    <h3 className="font-bold text-gray-500 mb-4 uppercase tracking-wider text-xs ml-1">Tier 3: Extra Proof (Grey - Optional)</h3>
+                    <DocCard label="Training Letter" type="training_letter" colorClass="bg-gray-50 border-gray-100" icon="📜" />
+                    <DocCard label="Apprenticeship" type="apprenticeship" colorClass="bg-gray-50 border-gray-100" icon="🛠️" />
+                    <DocCard label="Local Authority" type="local_authority" colorClass="bg-gray-50 border-gray-100" icon="🏛️" />
                 </div>
             </div>
 
-            {/* TIER 3 SECTION - Remains a placeholder for now */}
-            <div style={{ 
-                boxShadow: '0 4px 15px rgba(0,0,0,0.1)', 
-                padding: '25px', 
-                margin: '30px 0 20px 0', 
-                borderRadius: '10px', 
-                borderLeft: '5px solid #ffc107', 
-                textAlign: 'center' 
-            }}>
-                <h4 style={{ color: '#ffc107' }}>Current Skill Score: {profile.tier3_cibil_score} / 100</h4>
+            {/* MESSAGE TOAST */}
+            {message && (
+                <div className="fixed bottom-24 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white px-6 py-3 rounded-full shadow-xl font-bold z-50">
+                    {message}
+                </div>
+            )}
+
+            {/* FOOTER ACTIONS */}
+            <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-gray-100 z-10">
+                <ActionButton onClick={nextStep} disabled={loading}>
+                    Continue
+                </ActionButton>
             </div>
+
+            {/* CAMERA OVERLAY */}
+            {cameraOpen && (
+                <div className="fixed inset-0 bg-black z-50 flex flex-col">
+                    <div className="relative flex-1">
+                        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                        <canvas ref={canvasRef} className="hidden" />
+                        
+                        {/* Overlay Box */}
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="w-3/4 aspect-[3/2] border-4 border-white/50 rounded-xl relative">
+                                <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-amber-400 -mt-1 -ml-1"></div>
+                                <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-amber-400 -mt-1 -mr-1"></div>
+                                <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-amber-400 -mb-1 -ml-1"></div>
+                                <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-amber-400 -mb-1 -mr-1"></div>
+                            </div>
+                        </div>
+                        
+                        <button onClick={stopCamera} className="absolute top-4 right-4 text-white p-2 bg-black/50 rounded-full">
+                            <X size={32} />
+                        </button>
+                    </div>
+                    
+                    <div className="h-32 bg-black flex items-center justify-center gap-8">
+                        <button onClick={captureImage} className="w-20 h-20 bg-white rounded-full border-4 border-gray-300 shadow-lg flex items-center justify-center active:scale-95 transition-transform">
+                            <div className="w-16 h-16 bg-white rounded-full border-2 border-black"></div>
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

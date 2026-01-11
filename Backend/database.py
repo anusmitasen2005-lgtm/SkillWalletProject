@@ -45,12 +45,5 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
-    except Exception as e:
-        # In SQLite, errors are rare here, but catch them just in case.
-        print(f"DATABASE ERROR: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="Database service unavailable.",
-        )
     finally:
         db.close()

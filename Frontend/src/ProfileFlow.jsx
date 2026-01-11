@@ -1,112 +1,113 @@
-import React, { useState, useEffect } from 'react';
-// Import the specific steps using the correct file paths
-import StepIdentity from './StepIdentity.jsx';
-import StepTiers from "./StepTiers.jsx"; 
-import StepWork from "./StepWork.jsx"; 
-import StepFinalSummary from './StepFinalSummary.jsx'; 
-import StepCompleted from './StepCompleted.jsx'; 
 
-// Define the component to manage the entire flow
-function ProfileFlow() {
-    // 1. Initialize state variables: Read directly from local storage if available
-    const [currentStep, setCurrentStep] = useState(parseInt(localStorage.getItem('currentStep')) || 1);
-    const [userId, setUserId] = useState(localStorage.getItem('userId') || null);
-    const [accessToken, setAccessToken] = useState(localStorage.getItem('accessToken') || null);
-    
-    // 2. CRITICAL FIX: Persist state to local storage whenever it changes
-    useEffect(() => {
-        if (userId) {
-            localStorage.setItem('userId', userId);
-            localStorage.setItem('accessToken', accessToken);
-        }
-        localStorage.setItem('currentStep', currentStep);
-    }, [userId, accessToken, currentStep]);
+import { useState } from "react";
+import StepIdentity from "./StepIdentity";
+import StepTiers from "./StepTiers";
+import StepWork from "./StepWork";
+import StepCompleted from "./StepCompleted";
 
+export default function ProfileFlow({ language, setLanguage }) {
+  const [step, setStep] = useState(localStorage.getItem('profileCompleted') === 'true' ? 4 : 1);
+  const [userId, setUserId] = useState(localStorage.getItem('userId') || null);
+  const [accessToken, setAccessToken] = useState(localStorage.getItem('accessToken') || null);
 
-    // Function to move to the next step
-    const nextStep = () => setCurrentStep(prev => prev + 1);
-    
-    // Function to jump to any step number (used by the Dashboard)
-    const jumpToStep = (step) => setCurrentStep(step);
+  const updateStep = (newStep) => {
+      setStep(newStep);
+      if (newStep === 4) {
+          localStorage.setItem('profileCompleted', 'true');
+      }
+  };
 
-    const renderStep = () => {
-        // If the user is logged in and the current step is 1, we still render StepIdentity
-        // but StepIdentity is now smart enough to check local storage and jump to profile_setup.
-        
-        switch (currentStep) {
-            case 1:
-                return <StepIdentity 
-                            nextStep={nextStep} 
-                            setUserId={setUserId}
-                            setAccessToken={setAccessToken}
-                        />;
-            case 2:
-                // Pass key props to Tier 2 (StepTiers)
-                return <StepTiers userId={userId} accessToken={accessToken} nextStep={nextStep} />; 
-            case 3:
-                // Pass key props to Tier 3 (StepWork)
-                return <StepWork userId={userId} accessToken={accessToken} nextStep={nextStep} />;
-            case 4:
-                // Pass key props to Portfolio (StepFinalSummary)
-                return <StepFinalSummary userId={userId} accessToken={accessToken} nextStep={nextStep} />; 
-            case 5:
-                // CRITICAL FIX: Use key={userId} to force re-render when needed
-                return (
-                    <div key={userId}>
-                         <StepCompleted 
-                            nextStep={() => setCurrentStep(1)} 
-                            jumpToStep={jumpToStep} 
-                            userId={userId} 
-                        />
-                    </div>
-                );
-            default:
-                return (
-                    <div style={{ textAlign: 'center', padding: '50px', backgroundColor: '#e9f7ef', borderRadius: '10px' }}>
-                        <h2 style={{ color: '#28a745' }}>Flow Finished!</h2>
-                        <button onClick={() => setCurrentStep(1)} style={{marginTop: '20px', padding: '10px 20px'}}>
-                            Start Setup Again
-                        </button>
-                    </div>
-                );
-        }
-    };
+  const handleLoginSuccess = (uid, token) => {
+    setUserId(uid);
+    setAccessToken(token);
+    localStorage.setItem('userId', uid);
+    localStorage.setItem('accessToken', token);
+    // Stay on Step 1 but switch view inside StepIdentity or move to next if profile is done?
+    // For now, let's assume StepIdentity handles both Auth and Profile Setup.
+    // If Auth is done, StepIdentity shows Profile Setup.
+  };
 
-    return (
-        <div style={{ padding: '40px', maxWidth: '900px', margin: '30px auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', borderRadius: '15px', backgroundColor: '#fff' }}>
-            
-            <h1 style={{ textAlign: 'center', color: '#007bff' }}>
-                Skill Wallet Setup: Step {currentStep} 
-            </h1>
-            <hr style={{ margin: '20px 0' }} />
+  const resetFlow = () => {
+    setStep(1);
+    localStorage.removeItem('userId');
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('profileCompleted');
+    setUserId(null);
+    setAccessToken(null);
+  };
 
-            {/* START OVER BUTTON ONLY */}
-            <div style={{ textAlign: 'center', marginBottom: '20px' }}>
-                <button 
-                    onClick={() => {
-                        // Clear session storage and reset state
-                        localStorage.clear();
-                        setUserId(null);
-                        setAccessToken(null);
-                        setCurrentStep(1);
-                        window.location.reload(); // Force full app reset
-                    }} 
-                    style={{ 
-                        padding: '10px 20px', 
-                        backgroundColor: '#dc3545', 
-                        color: 'white', 
-                        border: 'none', 
-                        borderRadius: '5px', 
-                        cursor: 'pointer' 
-                    }}
-                >
-                    Start Over / Reset Flow
-                </button>
-            </div>
-            
-            {renderStep()}
+  const renderStep = () => {
+    switch (step) {
+      case 1:
+        return <StepIdentity 
+                  nextStep={() => updateStep(2)} 
+                  userId={userId} 
+                  onLogin={handleLoginSuccess}
+               />;
+      case 2:
+        return <StepTiers 
+                  nextStep={() => updateStep(3)} 
+                  userId={userId} 
+               />;
+      case 3:
+        return <StepWork 
+                  nextStep={() => updateStep(4)} 
+                  userId={userId} 
+               />;
+      case 4:
+        return <StepCompleted 
+                  jumpToStep={(s) => { if(s===1) resetFlow(); else updateStep(s); }}
+                  userId={userId} 
+               />;
+      default:
+        return (
+          <div className="text-center text-gray-500">
+            Flow completed.
+          </div>
+        );
+    }
+  };
+
+  // When on Dashboard (Step 4), let it take full screen control
+  if (step === 4) {
+      return <StepCompleted 
+                jumpToStep={(s) => { if(s===1) resetFlow(); else updateStep(s); }} 
+                userId={userId} 
+                language={language}
+                setLanguage={setLanguage}
+             />;
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50 flex flex-col items-center font-sans">
+      {/* GLOBAL HEADER: My Skill Identity */}
+      <header className="w-full bg-blue-700 text-white py-4 shadow-md sticky top-0 z-50">
+        <div className="max-w-5xl mx-auto px-6 flex justify-between items-center">
+            <h1 className="text-xl font-bold tracking-wide">My Skill Identity</h1>
+            <div className="text-sm opacity-80">Building a lifelong identity based on work</div>
         </div>
-    );
-}
+      </header>
 
-export default ProfileFlow;
+      <div className="w-full max-w-2xl mt-8 px-4 mb-20">
+        {/* Step Indicator */}
+        <div className="flex justify-between mb-8 text-xs font-semibold text-gray-400 uppercase tracking-widest">
+            <span className={step >= 1 ? "text-blue-600" : ""}>1. Who I Am</span>
+            <span className={step >= 2 ? "text-blue-600" : ""}>2. My Trust Records</span>
+            <span className={step >= 3 ? "text-blue-600" : ""}>3. My Work Journey</span>
+        </div>
+
+        {/* Step Content */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden min-h-[500px]">
+          {renderStep()}
+        </div>
+        
+        {/* Reset (Dev only) */}
+        <div className="mt-8 text-center">
+            <button onClick={resetFlow} className="text-gray-300 text-xs hover:text-red-400">
+                Reset Flow (Dev)
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+}
